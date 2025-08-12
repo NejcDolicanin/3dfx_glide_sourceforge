@@ -1781,11 +1781,15 @@ _GlideInitEnvironment(void)
    **       for apps that call grSstWinOpen.
    */
   _GlideRoot.environment.outputBpp = GLIDE_GETENV("FX_GLIDE_BPP", 0L);
+  
+  /* Nejc removed check since its pointless */
   /* check for a valid value */
+  /*
   if(_GlideRoot.environment.outputBpp != 32 ||
      _GlideRoot.environment.outputBpp != 15) {
     _GlideRoot.environment.outputBpp = 0;
   }
+ */
 
   /* Note- If the old school Glide env. vars for AA sample & Num chips
    * are active, they should ALWAYS override the control panel variable
@@ -1885,12 +1889,19 @@ _GlideInitEnvironment(void)
   _GlideRoot.environment.sliBandHeightForce = GLIDE_GETENV("FX_GLIDE_FORCE_SLI_BAND_HEIGHT", 0L);
   GDBG_INFO(80," sliBandHeightForce : %d\n",_GlideRoot.environment.sliBandHeightForce);
   
-  _GlideRoot.environment.swapPendingCount  = GLIDE_GETENV("FX_GLIDE_SWAPPENDINGCOUNT", 3L);
+  _GlideRoot.environment.swapPendingCount  = GLIDE_GETENV("FX_GLIDE_SWAPPENDINGCOUNT", 1L); /*3L*/
   /* The hardware counter is 3 bits. Anything above this will cause a hang. */
+  /* Nejc - set back to 3, as Koolsmokys version */
+    if (_GlideRoot.environment.swapPendingCount > 3)
+      _GlideRoot.environment.swapPendingCount = 3;
+    if (_GlideRoot.environment.swapPendingCount < 0)
+      _GlideRoot.environment.swapPendingCount = 0;
+  /*   
   if (_GlideRoot.environment.swapPendingCount > 6)
     _GlideRoot.environment.swapPendingCount = 6;
   if (_GlideRoot.environment.swapPendingCount < 0)
     _GlideRoot.environment.swapPendingCount = 0;
+  */ 
   GDBG_INFO(80," swapPendingCount : %d\n",_GlideRoot.environment.swapPendingCount);
   
   _GlideRoot.environment.gammaR = GLIDE_FGETENV("SSTH3_RGAMMA", 1.0f);

@@ -20,3 +20,7 @@
 *.lst
 *.RES
 *.inc
+glide3x/h5/incsrc/gendate.h
+glide3x/h5/glide3/src/fxgasm.h
+glide3x/h5/glide3/src/fxinline.h
+glide3x/h5/glide3/src/fxbldno.h
