@@ -2161,25 +2161,26 @@ GR_EXT_ENTRY(grSstWinOpenExt, GrContext_t, (FxU32 hWnd, GrScreenResolution_t res
       {
         switch (gc->grSstRez)
         {
+        /*
         case GR_RESOLUTION_1600x900:
         case GR_RESOLUTION_1600x1024:
           gc->do2ppc = FXTRUE;
           break;
-        /* Nejc ToDo */
-        /*
+        */
         case GR_RESOLUTION_1280x720:
         case GR_RESOLUTION_1280x800:
         case GR_RESOLUTION_1360x768:
         case GR_RESOLUTION_1680x720:
+        gc->do2ppc = FXTRUE;
         break;
+        /*
         case GR_RESOLUTION_1680x1050:
         case GR_RESOLUTION_1792x768:
         case GR_RESOLUTION_1920x800:
           break;
-        */
         case GR_RESOLUTION_1600x1200:
-        case GR_RESOLUTION_1920x1080: /* nd Extended */
-        case GR_RESOLUTION_1920x1200: /* nd Extended */
+        case GR_RESOLUTION_1920x1080: */
+        case GR_RESOLUTION_1920x1200:
           break;
         case GR_RESOLUTION_1792x1344:
         case GR_RESOLUTION_1856x1392:
@@ -2207,28 +2208,29 @@ GR_EXT_ENTRY(grSstWinOpenExt, GrContext_t, (FxU32 hWnd, GrScreenResolution_t res
       {
         switch (gc->grSstRez)
         {
+        /*
         case GR_RESOLUTION_1600x900:
         case GR_RESOLUTION_1600x1024:
           gc->do2ppc = FXTRUE;
           gc->bInfo->h3analogSli = 1;
           break;
-        /* Nejc ToDo */
-        /*
+        */
         case GR_RESOLUTION_1280x720:
         case GR_RESOLUTION_1280x800:
         case GR_RESOLUTION_1360x768:
         case GR_RESOLUTION_1680x720:
+        gc->do2ppc = FXTRUE;
         break;
+        /*
         case GR_RESOLUTION_1680x1050:
         case GR_RESOLUTION_1792x768:
         case GR_RESOLUTION_1920x800:
           break;
-        */
         case GR_RESOLUTION_1600x1200:
         case GR_RESOLUTION_1792x1344:
         case GR_RESOLUTION_1856x1392:
-        case GR_RESOLUTION_1920x1080: /* nd Extended */
-        case GR_RESOLUTION_1920x1200: /* nd Extended */
+        case GR_RESOLUTION_1920x1080: */ 
+        case GR_RESOLUTION_1920x1200:
         case GR_RESOLUTION_1920x1440:
         case GR_RESOLUTION_2048x1536:
         case GR_RESOLUTION_2048x2048:
