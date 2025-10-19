@@ -750,17 +750,11 @@ _GlideInitEnvironment(void)
     /* the hardware counter is only 3 bits so we don't want it to overflow */
     /* also the latency gets too long */
     _GlideRoot.environment.swapPendingCount  = GLIDE_GETENV("FX_GLIDE_SWAPPENDINGCOUNT", 1L); /*4L*/
-    /* Nejc - set back to 3, as Koolsmokys version */
-    if (_GlideRoot.environment.swapPendingCount > 3)
-      _GlideRoot.environment.swapPendingCount = 3;
-    if (_GlideRoot.environment.swapPendingCount < 0)
-      _GlideRoot.environment.swapPendingCount = 0;
-    /*
+    /* Nejc - leave it at 6, also in sync witn MesaFx, though I see no benefit to it */
     if (_GlideRoot.environment.swapPendingCount > 6)
       _GlideRoot.environment.swapPendingCount = 6;
     if (_GlideRoot.environment.swapPendingCount < 0)
       _GlideRoot.environment.swapPendingCount = 0;
-    */
 
     _GlideRoot.environment.snapshot          = GLIDE_GETENV("FX_SNAPSHOT", 0);
 
