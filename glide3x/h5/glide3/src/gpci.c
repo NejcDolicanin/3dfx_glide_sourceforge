@@ -1891,17 +1891,11 @@ _GlideInitEnvironment(void)
   
   _GlideRoot.environment.swapPendingCount  = GLIDE_GETENV("FX_GLIDE_SWAPPENDINGCOUNT", 1L); /*3L*/
   /* The hardware counter is 3 bits. Anything above this will cause a hang. */
-  /* Nejc - set back to 3, as Koolsmokys version */
-    if (_GlideRoot.environment.swapPendingCount > 3)
-      _GlideRoot.environment.swapPendingCount = 3;
-    if (_GlideRoot.environment.swapPendingCount < 0)
-      _GlideRoot.environment.swapPendingCount = 0;
-  /*   
   if (_GlideRoot.environment.swapPendingCount > 6)
     _GlideRoot.environment.swapPendingCount = 6;
   if (_GlideRoot.environment.swapPendingCount < 0)
     _GlideRoot.environment.swapPendingCount = 0;
-  */ 
+
   GDBG_INFO(80," swapPendingCount : %d\n",_GlideRoot.environment.swapPendingCount);
   
   _GlideRoot.environment.gammaR = GLIDE_FGETENV("SSTH3_RGAMMA", 1.0f);

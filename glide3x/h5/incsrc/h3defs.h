@@ -347,7 +347,7 @@
 #define SST_TCA_INVERT_OUTPUT   BIT(29)
 #define SST_TRILINEAR           BIT(30)
 #define SST_COMPRESSED_TEXTURES BIT(31)
-
+
 // here are some abstract constants that most people will be using
 // TC stands for Texture Combine (RGB channels)
 // TCA stands for Texture Combine Alpha (just the Alpha channel)
