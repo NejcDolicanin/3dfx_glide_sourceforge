@@ -8639,6 +8639,7 @@ hwcResolutionSupported(hwcBoardInfo *bInfo, GrScreenResolution_t res, GrScreenRe
 	"GR_RESOLUTION_1920x800",
 	"GR_RESOLUTION_1920x1080",
 	"GR_RESOLUTION_1920x1200",
+  "GR_RESOLUTION_1960x840",
 	"GR_RESOLUTION_3840x2160"
   };
 

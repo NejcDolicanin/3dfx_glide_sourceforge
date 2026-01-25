@@ -469,6 +469,7 @@ static  WidthHeight_t widthHeightByResolution[] = {
   {1920, 800},
   {1920, 1080},
   {1920, 1200},
+  {1960, 840},
   {3840, 2160}
 };
 
@@ -510,6 +511,7 @@ static char *resNames[] = {
   "GR_RESOLUTION_1920x800",
   "GR_RESOLUTION_1920x1080",
   "GR_RESOLUTION_1920x1200",
+  "GR_RESOLUTION_1960x840",
   "GR_RESOLUTION_3840x2160"
 };
 
