@@ -143,7 +143,10 @@ typedef FxI32 GrScreenResolution_t;
 #define GR_RESOLUTION_1920x1080 0x21	/* 16:9 */
 #define GR_RESOLUTION_1920x1200 0x22	/* 16:10 */
 #define GR_RESOLUTION_1960x840 	0x23	/* 21:9 */
-#define GR_RESOLUTION_3840x2160 0x24	/* just for a high max, still invalid */
+#define GR_RESOLUTION_2096x900 	0x24	/* 21:9 */
+#define GR_RESOLUTION_2304x960 	0x25	/* 21:9 */
+#define GR_RESOLUTION_2560x1080 0x26	/* 21:9 */
+#define GR_RESOLUTION_3840x2160 0x27	/* just for a high max, still invalid */
 #define GR_RESOLUTION_NONE      0xff
 
 #ifdef GR_RESOLUTION_MAX

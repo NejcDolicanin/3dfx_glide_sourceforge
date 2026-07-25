@@ -888,6 +888,9 @@ ResEntry
         {GR_RESOLUTION_1920x1080, 1920, 1080},
         {GR_RESOLUTION_1920x1200, 1920, 1200},
         {GR_RESOLUTION_1960x840, 1960, 840},
+        {GR_RESOLUTION_2096x900, 2096, 900},
+        {GR_RESOLUTION_2304x960, 2304, 960},
+        {GR_RESOLUTION_2560x1080, 2560, 1080},
         /* This one added so we have an unreachable max, if more come */
         {GR_RESOLUTION_3840x2160, 3840, 2160}};
 
@@ -2163,17 +2166,21 @@ GR_EXT_ENTRY(grSstWinOpenExt, GrContext_t, (FxU32 hWnd, GrScreenResolution_t res
       {
         switch (gc->grSstRez)
         {
-        /* allow 2PPC in these mid/high modes too, up to 1920x1080, default to TRUE */
+        /* allow 2PPC in these mid/high modes too, up to 2560x1080, default to TRUE */
         case GR_RESOLUTION_1280x720:
         case GR_RESOLUTION_1600x1024:
         case GR_RESOLUTION_1920x1080:
+        case GR_RESOLUTION_1960x840:
+        case GR_RESOLUTION_2096x900:
+        case GR_RESOLUTION_2304x960:
+        case GR_RESOLUTION_2560x1080:
           gc->do2ppc = FXTRUE;
           break;
         /* keep 1920x1200 as the cutoff (no 2ppc here) */
         case GR_RESOLUTION_1920x1200:
           break;
         /* ultra-high: force analog SLI as before */
-        case GR_RESOLUTION_1792x1344:
+        case GR_RESOLUTION_1792x1344: 
         case GR_RESOLUTION_1856x1392:
         case GR_RESOLUTION_1920x1440:
         case GR_RESOLUTION_2048x1536:
@@ -2201,10 +2208,14 @@ GR_EXT_ENTRY(grSstWinOpenExt, GrContext_t, (FxU32 hWnd, GrScreenResolution_t res
       {
         switch (gc->grSstRez)
         {
-          /* NEW: allow 2PPC at these modes too, up to 1920x1080, default to TRUE */
+          /* NEW: allow 2PPC at these modes too, up to 2560x1080, default to TRUE */
         case GR_RESOLUTION_1280x720:
         case GR_RESOLUTION_1600x1024:
         case GR_RESOLUTION_1920x1080:
+        case GR_RESOLUTION_1960x840:
+        case GR_RESOLUTION_2096x900:
+        case GR_RESOLUTION_2304x960:
+        case GR_RESOLUTION_2560x1080:
           gc->do2ppc = FXTRUE;
           break;
         case GR_RESOLUTION_1920x1200:

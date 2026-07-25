@@ -585,7 +585,7 @@ const void * FX_CALL fxSplashPlug (FxU32* w, FxU32* h,
  */
 #define GR_TEXFMT_P_8_RGBA           GR_TEXFMT_RSVD0
 
-#define GR_MAX_RESOLUTION   0x24 /* 0x17 */
+#define GR_MAX_RESOLUTION   0x27 /* 0x17 */
 #define GR_MAX_REFRESH      9	/* 8 */
 #define GR_MAX_COLOR_BUF    3
 #define GR_MAX_AUX_BUF      1
