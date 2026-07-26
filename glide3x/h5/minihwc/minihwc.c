@@ -6854,6 +6854,58 @@ FxU32 gss_red[256], gss_green[256], gss_blue[256], gss_red_shifted[256];
 FxU32 _gss_red[256], _gss_green[256], _gss_blue[256], _gss_red_shifted[256];
 #endif
 
+/* FXFALSE until the tables above hold something usable.  They only ever get
+ * filled in when the application loads a gamma ramp (hwcGammaTable) or reads
+ * one back (hwcGetGammaTable), and plenty of titles never touch gamma at all.
+ * That used to leave the tables full of zeroes, which made every screen shot
+ * come out solid black, so hwcAAScreenShot() now primes them itself. */
+static FxBool gssTablesValid = FXFALSE;
+
+static void gssSetTables(FxU32 nEntries, const FxU32 *r, const FxU32 *g, const FxU32 *b)
+{
+  FxU32 i;
+
+  if (nEntries > 256) nEntries = 256;
+
+  for (i = 0; i < nEntries; i++) {
+    gss_red[i]         = r[i] & 0xFF;
+    gss_green[i]       = g[i] & 0xFF;
+    gss_blue[i]        = b[i] & 0xFF;
+    gss_red_shifted[i] = gss_red[i] << 16;
+#if (GLIDE_PLATFORM & GLIDE_OS_UNIX)
+    /* The GCC inline assembly paths below reference these copies, so they have
+     * to be kept in step with the plain ones. */
+    _gss_red[i]         = gss_red[i];
+    _gss_green[i]       = gss_green[i];
+    _gss_blue[i]        = gss_blue[i];
+    _gss_red_shifted[i] = gss_red_shifted[i];
+#endif
+  }
+
+  gssTablesValid = FXTRUE;
+}
+
+static void gssInitTables(hwcBoardInfo *bInfo)
+{
+  FxU32 i, r[256], g[256], b[256];
+
+  if (gssTablesValid) return;
+
+  /* Seed an identity ramp before asking the hardware for anything.  On a 4 chip
+   * board at 4x/8x FSAA hwcGetGammaTable() deliberately ignores the DAC
+   * readback and hands these tables straight back instead (the shared DAC
+   * halves the hardware table), so while they were still full of zeroes that
+   * path would have returned zeroes and we would be no better off. */
+  for (i = 0; i < 256; i++) r[i] = i;
+  gssSetTables(256, r, r, r);
+
+  /* Now pick up the ramp the DAC is actually running with, the way the original
+   * hwcGammaCorrect() did before this got folded into the pack loops.  The
+   * identity seed above stays in place if the read fails. */
+  if (hwcGetGammaTable(bInfo, 256, r, g, b))
+    gssSetTables(256, r, g, b);
+}
+
 static void hwcCopyBuffer8888Flipped(hwcBoardInfo *bInfo, FxU16 *source, int w, int h, FxU8 *dst, int aaShift)
 {
   FxU16 *src = source + w*4*(h-1);
@@ -7560,12 +7612,21 @@ void hwcAAScreenShot(hwcBoardInfo *bInfo, FxU32 colBufNum, FxBool dither)
   
   FxU16 *buffer;
   FxU8 *out;
-  
+  FxU32 pixel, numPixels;
+
   /* Allocate buffer to store frame into... */
-  
+
   dither = FXTRUE;
+
+  /* Colour conversion below runs every component through the gamma lookup
+   * tables, so make sure they are not still full of zeroes.  Costs 256 DAC
+   * reads, but only on the first shot of a session and only if the application
+   * never loaded a ramp of its own. */
+  gssInitTables(bInfo);
+
+  numPixels = bInfo->vidInfo.xRes * bInfo->vidInfo.yRes;
   buffer = _aligned_malloc(bInfo->vidInfo.xRes * bInfo->vidInfo.yRes * 8, 8);
-  
+
   if(!buffer) return;
   
   out = malloc(bInfo->vidInfo.xRes * bInfo->vidInfo.yRes * 4);
@@ -7588,7 +7649,16 @@ void hwcAAScreenShot(hwcBoardInfo *bInfo, FxU32 colBufNum, FxBool dither)
     {
       hwcCopyBuffer8888Flipped(bInfo, buffer, bInfo->vidInfo.xRes, bInfo->vidInfo.yRes, out, 0);
     }
-    
+
+  /* Force the shot fully opaque.  The 16 bit read paths (565/1555) never
+   * produce an alpha component at all, and the 32 bit path returns whatever
+   * destination alpha the application happened to leave lying in the frame
+   * buffer -- which is zero for most titles.  Neither has any meaning on
+   * screen, and writing it out unchanged produced a 32 bit TGA that any viewer
+   * honouring the alpha channel showed as completely transparent. */
+  for (pixel = 0; pixel < numPixels; pixel++)
+    out[pixel * 4 + 3] = 0xFF;
+
   /* Write buffer to disk */
 #ifdef _WIN32
   GetLocalTime(&curtime);
@@ -7602,14 +7672,20 @@ void hwcAAScreenShot(hwcBoardInfo *bInfo, FxU32 colBufNum, FxBool dither)
   header[13] = (FxU8)(bInfo->vidInfo.xRes >> 8);
   header[14] = (FxU8)(bInfo->vidInfo.yRes & 255);
   header[15] = (FxU8)(bInfo->vidInfo.yRes >> 8);
-  header[16] =	32;  /* bytes per pixel */
-  
+  header[16] = 32;  /* bits per pixel */
+  /* Image descriptor: low nibble is the number of attribute (alpha) bits, so
+   * it has to say 8 for a 32 bpp image.  Leaving it at zero told viewers the
+   * file had no alpha bits while the depth said otherwise.  Bit 5 stays clear
+   * for TGA's default lower-left origin, which is what the flipped copy above
+   * produces. */
+  header[17] = 8;
+
   if ((file = fopen(fileName,"wb")) != NULL) {
     fwrite(header,18,1,file);
-    fwrite(out,bInfo->vidInfo.xRes * bInfo->vidInfo.yRes * 4, 1, file);
+    fwrite(out, numPixels * 4, 1, file);
     fclose(file);
   }
-  
+
   /* Free memory */
   _aligned_free(buffer);
   free(out);
@@ -8281,14 +8357,13 @@ hwcGammaTable(hwcBoardInfo *bInfo, FxU32 nEntries, FxU32 *r, FxU32 *g, FxU32 *b)
   for (i = 0; i < nEntries; i++) {
     gRamp[i] =
       ((r[i] & 0xff) << RED_SHIFT) |
-      ((g[i] & 0xff) << GREEN_SHIFT) |  
+      ((g[i] & 0xff) << GREEN_SHIFT) |
       ((b[i] & 0xff) << BLUE_SHIFT);
-    gss_red[i]         = r[i];
-    gss_green[i]       = g[i];
-    gss_blue[i]        = b[i];
-    gss_red_shifted[i] = gss_red[i] << 16;
     GDBG_INFO(69,": gRamp[%d] = %d\n", i, gRamp[i]);
   }
+
+  /* Keep the screen shot lookup tables in step with the ramp we just built */
+  gssSetTables(nEntries, r, g, b);
 
   /* Voodoo5 6000 DAC workaround for 4x, 8xFSAA.
      Since the DAC is shared between 2 chips, the input to gamma look up table
@@ -8487,15 +8562,10 @@ hwcGetGammaTable(hwcBoardInfo *bInfo, FxU32 nEntries, FxU32 *r, FxU32 *g, FxU32 
     }
   }
 
-  for (i = 0; i < 256; i++) {
-    gss_red[i]         = r[i];
-    gss_green[i]       = g[i];
-    gss_blue[i]        = b[i];
-    gss_red_shifted[i] = gss_red[i] << 16;
-  }
+  gssSetTables(256, r, g, b);
 
   return FXTRUE;
-  
+
 #else
   /*
    * Here lies the GDIish implementation of hwcGetGammaTable.
