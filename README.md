@@ -12,7 +12,7 @@ Glide for 3dfx - Forked from Glide sourceforge project, development branch
   
 ## Build instructions
 make -f Makefile.win32 realclean \
-make -f Makefile.win32 FX_GLIDE_HW=h5 H4=1 USE_X86=1 USE_3DNOW=1 USE_MMX=1 USE_SSE=1 USE_SSE2=1 TEXUS2=1
+make -f Makefile.win32 FX_GLIDE_HW=h5 USE_X86=1 USE_3DNOW=1 USE_MMX=1 USE_SSE=1 USE_SSE2=1 TEXUS2=1
 
 ### Additional versions information \
 make - GNU Make 3.81 \

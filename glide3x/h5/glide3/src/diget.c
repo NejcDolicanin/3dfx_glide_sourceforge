@@ -760,11 +760,26 @@ GR_DIENTRY(grGet, FxU32, (FxU32 pname, FxU32 plength, FxI32 *params))
     break;
   case GR_VIDEO_POSITION:
 #if defined(GLIDE3) && defined(GLIDE3_ALPHA)
-    if (plength == 8) {
-      *params = 
-      *(params + 1) = 0;
+    /* This used to accept plength == 8 only, and even then it answered a
+     * constant 0,0 - it never looked at the hardware. Anything waiting for
+     * the beam to move spun forever. Napalm has no combined hvRetrace
+     * register like cvg does, but vidCurrentLine holds the scanline the
+     * DAC is on, which is what a retrace wait actually needs.
+     *
+     * plength == 4 asks for the vertical position on its own, which is how
+     * the old glide2 grSstVideoLine() maps onto glide3. Ignition uses it.
+     */
+    if ((plength == 4) || (plength == 8)) {
+      GR_DCL_GC;
 
-      retVal = plength;
+      if (gc != NULL && gc->ioRegs != NULL) {
+        *params = (FxI32)((GET(gc->ioRegs->vidCurrentLine) & SST_VIDEO_CURRENT_LINE)
+                          >> SST_VIDEO_CURRENT_LINE_SHIFT);
+        /* No horizontal beam counter is exposed, so report 0 for it. */
+        if (plength == 8) *(params + 1) = 0;
+
+        retVal = plength;
+      }
     }
 #endif
   break;
