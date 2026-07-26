@@ -50,7 +50,7 @@
 
 .PHONY: all clean realclean
 
-export BUILD_NUMBER = 40406
+export BUILD_NUMBER = 40407
 export FX_GLIDE_HW ?= h5
 
 ifeq ($(FX_GLIDE_HW),sst96)
