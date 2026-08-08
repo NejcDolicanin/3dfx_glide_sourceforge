@@ -149,7 +149,7 @@
 #endif 
 #endif
 
-#if GLIDE_USE_C_TRISETUP || __POWERPC__
+#if GLIDE_USE_C_TRISETUP || __POWERPC__ || defined(FX_C_TRISETUP_SHIM)
 /*-------------------------------------------------------------------
   Function: _grDrawVertexList
   Date: 18-Sep-97

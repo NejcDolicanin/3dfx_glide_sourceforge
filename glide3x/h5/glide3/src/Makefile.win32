@@ -190,6 +190,14 @@ GLIDE_OBJECTS += \
 	cpuid.obj \
 	xdraw2_def.obj \
 	xdraw3_def.obj
+# Also build gxdraw.c's C triangle setup, under renamed symbols so it links
+# beside xdraw2_def/xdraw3_def (see FX_C_TRISETUP_SHIM in fxglide.h). Both are
+# then present and the choice is made at run time -- automatically for known
+# affected games (DetectIgnitionGame in gpci.c), or forced either way with the
+# FX_GLIDE_C_TRISETUP environment variable. Default stays asm.
+CFLAGS += -DFX_C_TRISETUP_SHIM
+GLIDE_OBJECTS += \
+	gxdraw.obj
 ifeq ($(USE_3DNOW),1)
 GLIDE_OBJECTS += \
 	xdraw2_3dnow.obj \

@@ -203,7 +203,16 @@ static char *indexNames[] = {
 };  
 #endif /* GDBG_INFO_ON */
 
-#if GLIDE_USE_C_TRISETUP
+#ifdef FX_C_TRISETUP_SHIM
+/* Emit distinct symbols so these can link beside xdraw2_def/xdraw3_def. */
+#define _trisetup_Default_win_cull_invalid   _c_trisetup_win_cull_invalid
+#define _trisetup_Default_win_cull_valid     _c_trisetup_win_cull_valid
+#define _trisetup_Default_win_nocull_invalid _c_trisetup_win_nocull_invalid
+#define _trisetup_Default_win_nocull_valid   _c_trisetup_win_nocull_valid
+#define _vptrisetup_cull                     _c_vptrisetup_cull
+#endif
+
+#if GLIDE_USE_C_TRISETUP || defined(FX_C_TRISETUP_SHIM)
 
 static FxI32
 _grTriCull(const void* a, const void* b, const void* c)

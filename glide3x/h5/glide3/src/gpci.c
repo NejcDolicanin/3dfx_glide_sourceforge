@@ -615,6 +615,73 @@ static GrTriSetupProc _triSetupProcs[][2][2][2] =
   },
 };
 
+#ifdef FX_C_TRISETUP_SHIM
+/* C trisetup, selectable at runtime via FX_GLIDE_C_TRISETUP=1. Exists so a
+ * per-game exception (e.g. Ignition) can avoid the asm triangle setup without
+ * giving up the asm vertex list or the SIMD texture-download paths.
+ */
+static GrTriSetupProc _cTriSetupProcs[][2][2][2] =
+{
+  {
+    /* Window coords */
+    {
+      { _c_trisetup_win_nocull_valid,   _c_trisetup_win_cull_valid },
+      { _c_trisetup_win_nocull_invalid, _c_trisetup_win_cull_invalid },
+    },
+    /* Clip coordinates */
+    {
+      { _c_vptrisetup_cull, _c_vptrisetup_cull },
+      { _c_vptrisetup_cull, _c_vptrisetup_cull },
+    },
+  },
+};
+
+/* Matching C vertex list, swapped by the same runtime flag. */
+static GrVertexListProc _cVertexListProcs[2] = {
+  _grDrawVertexList, _grDrawVertexList
+};
+
+/* Detects if the current process is the Ignition 3dfx executable.
+ * Returns 1 if the executable is named "Ign_3dfx.exe" (case-insensitive),
+ * 0 otherwise.
+ *
+ * Ignition's 2D interface flickers when its geometry goes through the x86
+ * assembly draw paths: the UI is written straight into the back buffer with
+ * grLfbLock(GR_LFB_WRITE_ONLY) while the triangles are queued, and the asm
+ * paths submit fast enough to lose that race.
+ *
+ * The asm was checked and cleared as far as could be measured -- the packets
+ * it emits carry the same values as the C path, the same byte count, and the
+ * declared vs written size and fifoRoom accounting all agree. Every mitigation
+ * that ever suppressed the flicker (fence interval, dummy LFB reads, verbose
+ * logging) was simply a slowdown. So this is a timing exposure rather than a
+ * located defect, and the exception is a workaround, not a fix.
+ */
+static int
+DetectIgnitionGame(void)
+{
+#if GLIDE_PLATFORM & GLIDE_OS_WIN32
+  char exePath[MAX_PATH];
+  char *exeName;
+
+  if (GetModuleFileName(NULL, exePath, MAX_PATH) == 0)
+    return 0;
+
+  /* Get just the filename from the full path */
+  exeName = strrchr(exePath, '\\');
+  if (exeName)
+    exeName++;                          /* Skip the backslash */
+  else
+    exeName = exePath;
+
+  if (_stricmp(exeName, "Ign_3dfx.exe") == 0)
+    return 1;
+#endif /* GLIDE_OS_WIN32 */
+
+  return 0;
+} /* DetectIgnitionGame */
+#endif /* FX_C_TRISETUP_SHIM */
+
 /* NB: This is the only set of asm specializations taht needs to be
  * unset for C_TRISETUP. Currently, teh grDrawTriangle code will only
  * vector to the asm code if C_TRISETUP is not set.  
@@ -1398,6 +1465,44 @@ _GlideInitEnvironment(void)
     _GlideRoot.deviceArchProcs.curTexProcs        = _texDownloadProcs + 3;
   }
 #endif /* GL_SSE2*/
+
+#ifdef FX_C_TRISETUP_SHIM
+  /* Per-game escape hatch: reproduce, at run time, what a build without
+   * USE_X86 would do -- C triangle setup and vertex list, and none of the
+   * CPU-specialised paths. Enabled automatically for known-affected games,
+   * or forced either way with FX_GLIDE_C_TRISETUP. Applied last so it
+   * overrides every specialisation selected above.
+   *
+   * Everything here matters, not just the triangle setup: the C setup path is
+   * heavy x87, and MMX shares its register file, so leaving the MMX/3DNow!/SSE2
+   * texture-download routines active alongside it risks x87 state being clobbered.
+   * A non-USE_X86 build never links those at all, which is the configuration
+   * this is meant to match.
+   */
+  if (GLIDE_GETENV("FX_GLIDE_C_TRISETUP", DetectIgnitionGame())) {
+    GDBG_INFO(0,"Disabling x86 specialisations (C triangle setup)\n");
+
+    /* Geometry: C trisetup + C vertex list. _c_vptrisetup_cull vectors through
+     * drawTrianglesProc for clip coords, so that goes back to C as well.
+     */
+    _GlideRoot.deviceArchProcs.curTriProcs        = _cTriSetupProcs + 0;
+    _GlideRoot.deviceArchProcs.curVertexListProcs = _cVertexListProcs;
+    _GlideRoot.deviceArchProcs.curDrawTrisProc    = _grDrawTriangles_Default;
+
+    /* Texture download: back to the default (non-SIMD) procs. */
+    _GlideRoot.deviceArchProcs.curTexProcs        = _texDownloadProcs + 0;
+
+#if GL_X86
+    /* Kill the remaining run-time checked CPU paths -- the MMX blits in
+     * grLfbWriteRegion/grLfbReadRegion and the MMX AA/screenshot loops in
+     * minihwc, which test these bits directly. minihwc holds a pointer to
+     * this struct (hwcSetCPUInfo above), so clearing it here reaches it too.
+     */
+    _GlideRoot.CPUType.feature    = 0;
+    _GlideRoot.CPUType.os_support = 0;
+#endif /* GL_X86 */
+  }
+#endif /* FX_C_TRISETUP_SHIM */
 
   /* constant pool */
   _GlideRoot.pool.f0   =   0.0F;

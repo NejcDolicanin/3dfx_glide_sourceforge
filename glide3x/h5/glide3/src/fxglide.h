@@ -1322,6 +1322,18 @@ typedef GrTriSetupProcVector GrTriSetupProcArchVector[2];
  *     gc is nabbed from tls and passed in edx. Screw w/ this at your
  *     own peril. You have been warned.
  */
+#ifdef FX_C_TRISETUP_SHIM
+/* Shim: gxdraw.c's C trisetup is linked *alongside* the asm objects under
+ * distinct symbols, so both are available and the choice is made at runtime
+ * (FX_GLIDE_C_TRISETUP=1). gxdraw.c renames its own definitions to these.
+ */
+extern FxI32 FX_CALL _c_trisetup_win_cull_invalid(const void*, const void*, const void*);
+extern FxI32 FX_CALL _c_trisetup_win_cull_valid(const void*, const void*, const void*);
+extern FxI32 FX_CALL _c_trisetup_win_nocull_invalid(const void*, const void*, const void*);
+extern FxI32 FX_CALL _c_trisetup_win_nocull_valid(const void*, const void*, const void*);
+extern FxI32 FX_CALL _c_vptrisetup_cull(const void*, const void*, const void*);
+#endif /* FX_C_TRISETUP_SHIM */
+
 extern FxI32 FX_CALL _trisetup_Default_win_cull_invalid(const void*, const void*, const void*);
 extern FxI32 FX_CALL _trisetup_Default_win_cull_valid(const void*, const void*, const void*);
 extern FxI32 FX_CALL _trisetup_Default_win_nocull_invalid(const void*, const void*, const void*);
