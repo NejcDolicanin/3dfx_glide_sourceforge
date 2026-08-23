@@ -817,6 +817,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include "gamefix.h"
 #endif
 
 #if (GLIDE_PLATFORM & GLIDE_OS_MACOS)
@@ -893,6 +894,14 @@ ResEntry
         {GR_RESOLUTION_2560x1080, 2560, 1080},
         /* This one added so we have an unreachable max, if more come */
         {GR_RESOLUTION_3840x2160, 3840, 2160}};
+
+/* Number of entries in _resTable, derived from the table itself so it cannot
+ * fall out of step with it.  Exported because a caller in another file only
+ * ever sees `extern ResEntry _resTable[]`, which is an incomplete type -- so
+ * sizeof there is not legal, and the alternative would be a second, drifting
+ * copy of the count.  diglide.c's grGlideInit bound-checks the resolution
+ * override with it. */
+const FxU32 _resTableCount = sizeof(_resTable) / sizeof(ResEntry);
 
 /* ---------------------------------------------
    This function both sets and documents the
@@ -1566,6 +1575,29 @@ GR_EXT_ENTRY(grSstWinOpenExt, GrContext_t, (FxU32 hWnd, GrScreenResolution_t res
             ? GR_RESOLUTION_640x480
             : resolution;
 
+#if (GLIDE_PLATFORM & GLIDE_OS_WIN32)
+    /* Per-game widescreen fixes, second chance.  See gamefix.c.
+     *
+     * grGlideInit is the primary hook, but a game that loads modules over the
+     * course of its startup can still have an unmapped one then; this call is
+     * late enough to catch those and is the point at which the override has
+     * actually been decided, is_opengl included.  Both calls are idempotent --
+     * a patch whose find bytes are gone is skipped -- and the resolution is
+     * re-adopted from the same _resTable the line above just indexed, so the
+     * two sites cannot disagree about the screen size.
+     */
+    if (_GlideRoot.environment.glideResOverride > 1 &&
+        _GlideRoot.environment.is_opengl == FXFALSE) {
+      GameFix_SetTargetResolution((unsigned int)resolution,
+                                  (unsigned int)_resTable[resolution].xres,
+                                  (unsigned int)_resTable[resolution].yres);
+    }
+    /* Unconditional, and a no-op unless grGlideInit armed a target: this is
+     * also where the buffered status log reaches disk, since the render loop
+     * must never write a file (see g_inSwap in gamefix.c). */
+    GameFix_Apply();
+#endif /* GLIDE_OS_WIN32 */
+
 #ifdef DRI_BUILD
     gc->state.screen_width = driInfo.screenWidth;
     gc->state.screen_height = driInfo.screenHeight;
@@ -1582,6 +1614,22 @@ GR_EXT_ENTRY(grSstWinOpenExt, GrContext_t, (FxU32 hWnd, GrScreenResolution_t res
       gc->state.screen_height = gc->vidTimings->yDimension;
     }
 #endif /* defined(DRI_BUILD) */
+
+#if (GLIDE_PLATFORM & GLIDE_OS_WIN32)
+    /* What the DRIVER actually settled on, as opposed to what the game asked
+     * for or what gamefix was told.  Logged here because those three can
+     * disagree -- vidTimings can override the table two lines up -- and a log
+     * that records only the request cannot tell "never armed" from "applied"
+     * from "refused" (GAME-PATCHING.md section 6). */
+    GameFix_Log("driver: grSstWinOpen res=%u -> %ux%u  (override=%u opengl=%u"
+                " bufs=%d/%d)",
+                (unsigned int)resolution,
+                (unsigned int)gc->state.screen_width,
+                (unsigned int)gc->state.screen_height,
+                (unsigned int)_GlideRoot.environment.glideResOverride,
+                (unsigned int)_GlideRoot.environment.is_opengl,
+                nColBuffers, nAuxBuffers);
+#endif
 
     /* this is a stupid hack but... */
     gc->chipCount = 1;
@@ -2585,6 +2633,41 @@ GR_EXT_ENTRY(grSstWinOpenExt, GrContext_t, (FxU32 hWnd, GrScreenResolution_t res
     gc->tBuffer.bufSize = bInfo->tramSize;
     gc->tBuffer.tiled = FXFALSE;
     gc->tBuffer.bufBPP = 0xffffffff; /* Don't matter to me */
+
+#if (GLIDE_PLATFORM & GLIDE_OS_WIN32)
+    /* The memory layout this mode actually produced.  These are the numbers
+     * GDBG_INFO prints in a debug build, which is no use on the target box, and
+     * they are what would identify a tiling or video-memory fault -- the class
+     * of thing that takes a Voodoo down hard rather than merely drawing wrong.
+     * Logged from the setup path, never from a frame.
+     *
+     * Read them against a mode known to work (800x600) rather than in
+     * isolation: it is the DIFFERENCE that means something. */
+    GameFix_Log("  fb: %ux%u stride=%u tiles=%ux%u bufSize=%08lx pix=%u/%u",
+                (unsigned int)gc->state.screen_width,
+                (unsigned int)gc->state.screen_height,
+                (unsigned int)gc->bufferStride,
+                (unsigned int)gc->strideInTiles,
+                (unsigned int)gc->heightInTiles,
+                (unsigned long)gc->bufSize,
+                (unsigned int)gc->grPixelSize,
+                (unsigned int)gc->grPixelSample);
+    GameFix_Log("  sli: count=%u bandLog2=%u   buffers %08lx %08lx %08lx",
+                (unsigned int)gc->sliCount,
+                (unsigned int)gc->sliBandHeight,
+                (unsigned long)gc->buffers0[0],
+                (unsigned long)gc->buffers0[1],
+                (unsigned long)gc->buffers0[2]);
+    GameFix_Log("  tram: fbOffset=%08lx off=%08lx size=%08lx"
+                "  tmu0=%08lx+%08lx tmu1=%08lx+%08lx",
+                (unsigned long)gc->fbOffset,
+                (unsigned long)bInfo->tramOffset,
+                (unsigned long)bInfo->tramSize,
+                (unsigned long)gc->tmuMemInfo[0].tramOffset,
+                (unsigned long)gc->tmuMemInfo[0].tramSize,
+                (unsigned long)gc->tmuMemInfo[1].tramOffset,
+                (unsigned long)gc->tmuMemInfo[1].tramSize);
+#endif
 
     GDBG_INFO(1, "autoBump: 0x%x\n", _GlideRoot.environment.autoBump);
     /* The logic for this is hosed for PowerPC, where we disable auto-bump even

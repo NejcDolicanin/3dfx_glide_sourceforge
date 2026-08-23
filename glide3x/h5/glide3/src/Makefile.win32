@@ -183,6 +183,7 @@ GLIDE_OBJECTS = \
 	gsst.obj \
 	gtex.obj \
 	gtexdl.obj \
+	gamefix.obj \
 	xtexdl_def.obj
 
 ifeq ($(USE_X86),1)

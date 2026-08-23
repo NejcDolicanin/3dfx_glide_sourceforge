@@ -140,6 +140,10 @@
 #include "fxglide.h"
 #include "fxcmd.h"
 
+#if (GLIDE_PLATFORM & GLIDE_OS_WIN32)
+#include "gamefix.h"
+#endif
+
 #include "rcver.h"
 static char glideIdent[] = "@#%" VERSIONSTR ;
 
@@ -346,6 +350,70 @@ GR_DIENTRY(grGlideInit, void, (void))
   GDBG_INFO(80,"grGlideInit()\n");
   _GlideInitEnvironment(); /* the main init code */
   FXUNUSED(*glideIdent);
+
+#if (GLIDE_PLATFORM & GLIDE_OS_WIN32)
+  /* Per-game widescreen fixes.  See gamefix.c, and the method in
+   * GlideXp/GLIDE2X/GAME-PATCHING.md.
+   *
+   * This is the earliest reliable hook.  DLL_PROCESS_ATTACH is too early:
+   * a game pulls its renderer and the rest of its module set in with
+   * LoadLibrary, and on Win9x GetModuleHandleA returns NULL for a module
+   * whose load is still in progress.  A Glide game's video layer calls
+   * grGlideInit before it touches the screen, so by now the modules that
+   * matter are mapped -- and _GlideInitEnvironment above has just filled in
+   * glideResOverride, which is what everything is patched to agree with.
+   *
+   * The resolution is looked up in the driver's own _resTable rather than
+   * duplicated in gamefix.c, so there is one table in the build and it
+   * cannot drift.  The guard is the same one grSstWinOpen applies to the
+   * override itself (gsst.c): anything else would patch a game for a screen
+   * size the driver is not going to set.  is_opengl is still FXFALSE here --
+   * grEnable(GR_OPENGL_MODE_EXT) comes later -- so it is only meaningful on
+   * the second call from grSstWinOpen, but testing it in both places keeps
+   * the two sites saying the same thing.
+   *
+   * GameFix_Apply is idempotent and does nothing at all without an override.
+   */
+  {
+    extern ResEntry _resTable[];
+    extern const FxU32 _resTableCount;
+    FxU32 res = _GlideRoot.environment.glideResOverride;
+
+    /* The override, when armed, stays the single source of truth: it is what
+     * grSstWinOpen will force, so it is what the game has to be patched to
+     * agree with.
+     *
+     * When it is NOT armed, `[GameFix] resolution=` in wideDriver.ini names a
+     * mode for this game alone, and the game is patched to ASK for it.  That
+     * route exists because the override is a machine-wide hammer -- it applies
+     * to every Glide app -- and because Diablo II is well behaved without it.
+     * Either way the pixels come from _resTable, so there is still exactly one
+     * resolution table in the build. */
+    FxU32 iniRes = (FxU32)GameFix_IniResolution();
+
+    if (res <= 1) {
+      res = iniRes;
+      if (res > 1) GameFix_Log("gamefix: resolution %u from wideDriver.ini", res);
+    } else {
+      /* The override is armed, so it wins -- it is what grSstWinOpen will
+       * force, and patching the game for anything else would aim it at a
+       * screen it does not get.  Say so, loudly: an ini resolution that is
+       * silently ignored looks exactly like an ini that was not read. */
+      GameFix_Log("gamefix: resolution %u from FX_GLIDE_OVERRIDE_RESOLUTION", res);
+      if (iniRes > 1 && iniRes != res)
+        GameFix_Log("gamefix: WARNING ini asked for %u -- override wins."
+                    " Disable the override to use the ini value.", iniRes);
+    }
+
+    if (res > 1 && _GlideRoot.environment.is_opengl == FXFALSE &&
+        res < _resTableCount)
+      GameFix_SetTargetResolution((unsigned int)res,
+                                  (unsigned int)_resTable[res].xres,
+                                  (unsigned int)_resTable[res].yres);
+
+    GameFix_Apply();
+  }
+#endif /* GLIDE_OS_WIN32 */
 
 #if GDBG_INFO_ON
   GDBG_ERROR_SET_CALLBACK(_grErrorCallback);

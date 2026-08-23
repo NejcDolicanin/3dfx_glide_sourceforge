@@ -641,6 +641,10 @@
 #include "fxcmd.h"
 #include "fxinline.h"
 
+#if (GLIDE_PLATFORM & GLIDE_OS_WIN32)
+#include "gamefix.h"
+#endif
+
 #if (GLIDE_PLATFORM & GLIDE_SST_SIM)
 #if HAL_CSIM
 #include <csim.h>
@@ -2629,6 +2633,14 @@ GR_ENTRY(grBufferSwap, void, (FxU32 swapInterval))
   GR_BEGIN_NOFIFOCHECK(FN_NAME,86);
   GDBG_INFO_MORE(gc->myLevel,"(%d)\n",swapInterval);
 
+#if (GLIDE_PLATFORM & GLIDE_OS_WIN32)
+  /* Per-game widescreen fixes: retry any profile whose module was still not
+   * mapped at grSstWinOpen, and flush the status log.  Both stop costing
+   * anything once there is nothing left to do.  Placed ahead of the
+   * windowed-mode early-out below so it runs in every mode. */
+  GameFix_Tick();
+#endif
+
 #ifdef FX_GLIDE_NAPALM
 #if !(GLIDE_PLATFORM & GLIDE_OS_UNIX) && !(GLIDE_PLATFORM & GLIDE_OS_DOS32)
   /* Window hacky stuff */
@@ -4075,6 +4087,14 @@ GR_ENTRY(grFogTable, void, (const GrFog_t fogtable[]))
 
 GR_ENTRY(grGlideShutdown, void, (void))
 {
+#if (GLIDE_PLATFORM & GLIDE_OS_WIN32)
+  /* Get the buffered gamefix log onto disk.  The render loop cannot write a
+   * file -- doing so from grBufferSwap froze Win98 hard -- so this and the
+   * setup calls are the only places it can happen.  Before the early-out
+   * below, so a run that never initialised still leaves its record. */
+  GameFix_Shutdown();
+#endif
+
   if (!_GlideRoot.initialized) return;  /* never made it thru startup */
 
   /* GMT: reset the counter so we can proceed without assertions */
