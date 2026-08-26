@@ -1535,6 +1535,29 @@ static const D2Hook g_d2Hooks[] = {
     { "D2Client.dll", 0x6fb7fc7cu, 0x6fab0000u, 1, 2, "cli gfx#10067" },
     /* Traced only, to identify drawers.  Nothing is written into an argument
        whose meaning has not been confirmed by a run. */
+    /*
+    ** The FRONT END's text.
+    **
+    ** Found by trace, not by reading: at 1432x600 the menu's images all moved
+    ** and none of its text did, so the text was reaching D2gfx through a slot
+    ** we did not hook.  It is NOT D2Win#10076 (DrawText) -- nothing inside
+    ** D2Win calls that, only D2Client does, which is exactly why the in-game
+    ** belt digits work and the menu did not.
+    **
+    ** Ten candidate draw slots were hooked trace-only for one run.  This is
+    ** the one that carried glyphs:
+    **
+    **   draw win gfx#10067 +013629  <ptr> 222 520 ...   the copyright line
+    **   draw win gfx#10067 +013629  <ptr> 236 520 ...   x advancing per glyph
+    **   draw win gfx#10067 +01344f  <ptr> 340 384 ...   the button labels
+    **
+    ** x in argument 1 and y in argument 2 -- the same positions D2Client's
+    ** hook on this very export already uses for the orb icons.  The other
+    ** nine carried no coordinates and were dropped rather than left running
+    ** in the draw path for nothing.
+    */
+    { "D2Win.dll",    0x6f8fb0a0u, 0x6f8e0000u, 1, 2, "win gfx#10067" },
+
     { "D2Client.dll", 0x6fb7fc58u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli gfx#10013" },
     { "D2Client.dll", 0x6fb7fbc0u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10150" },
     { "D2Client.dll", 0x6fb7fbd0u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10047" },
@@ -1565,7 +1588,7 @@ static const D2Hook g_d2Hooks[] = {
     { "D2Client.dll", 0x6fb7fc5cu, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli gfx#10059" },
     { "D2Client.dll", 0x6fb7fc04u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli gfx#10016" }
 };
-#define D2_HOOKS       30
+#define D2_HOOKS       31
 #define D2_TAG_CLIENT  0u
 #define D2_TAG_WIN     1u
 
@@ -1615,7 +1638,9 @@ static const D2Fix2D g_d2Fix2D[] = {
 
 static int            g_d2Trace    = 0;
 static int            g_d2Menu     = 1;   /* centre the front end */
-static int            g_d2FrontEnd = 0;   /* front end up (D2Client absent) */
+static int            g_d2FrontEnd = 0;   /* front end up -- see GameFix_Tick */
+static unsigned int   g_d2Frame     = 0;   /* grBufferSwap count, for the below */
+static unsigned int   g_d2CliDrawn  = 0;   /* last frame D2Client drew anything */
 static unsigned int   g_d2Real[D2_HOOKS];
 static unsigned char *g_d2Stub[D2_HOOKS];
 
@@ -1724,6 +1749,13 @@ static void __cdecl D2Dispatch(unsigned int tag, unsigned int ra,
     h   = &g_d2Hooks[tag];
     rva = ra - h->base;
 
+    /*
+    ** Note that D2Client drew.  This is what tells the front end apart from a
+    ** game in progress -- see GameFix_Tick.  One store, no calls: this runs
+    ** hundreds of times a frame.
+    */
+    if (h->base == 0x6fab0000u) g_d2CliDrawn = g_d2Frame;
+
     if (h->xarg != ARG_NONE)
         px = (h->xarg & ARG_REG) ? &regs[h->xarg & 0x0fu] : &args[h->xarg];
     if (h->yarg != ARG_NONE)
@@ -1743,7 +1775,11 @@ static void __cdecl D2Dispatch(unsigned int tag, unsigned int ra,
         ** up: every D2Win draw in the trace happened before D2Client loaded
         ** and none after.
         */
-        if (tag == D2_TAG_WIN) {
+        if (h->base == 0x6f8e0000u) {
+            /* Keyed on the MODULE, not on one tag: the front end reaches the
+               renderer through more than one D2Win slot -- DrawImage for the
+               art and gfx#10067 for every glyph -- and both have to move by
+               the same amount or the labels slide off their buttons. */
             if (g_d2Menu && g_d2FrontEnd) {
                 *px += cx; *py += cy; applied = 1; what = "menu";
             }
@@ -2264,6 +2300,7 @@ void GameFix_Tick(void)
     if (!g_matched) return;
 
     frame++;
+    g_d2Frame = frame;
 
     g_inSwap = 1;
 
@@ -2283,11 +2320,26 @@ void GameFix_Tick(void)
         Diablo2InstallDrawHook();      /* D2Client arrives after the menu */
     }
 
-    /* Whether the front end is up, evaluated once a frame rather than once
-       per sprite: the draw hook fires hundreds of times a frame and must not
-       be making loader calls. */
-    if (g_matched)
-        g_d2FrontEnd = (GetModuleHandleA("D2Client.dll") == NULL);
+    /*
+    ** Whether the front end is up, evaluated once a frame rather than once per
+    ** sprite: the draw hook fires hundreds of times a frame and must not be
+    ** making loader calls.
+    **
+    ** "D2Client is not loaded" is true before the first game and never again --
+    ** the module stays mapped once loaded, so quitting a game back to the menu
+    ** left the front end uncentred.  What actually distinguishes the two is who
+    ** is DRAWING: D2Client paints the world every frame during a game and not
+    ** one sprite while the menu is up, where D2Launch drives D2Win instead.
+    **
+    ** So: not loaded, or loaded but silent for a few frames.  The margin is
+    ** there because a frame in which the client happens to draw nothing should
+    ** not flick the menu sideways; it costs a few frames of stale answer on the
+    ** way back to the menu, which nothing is watching.
+    */
+    if (g_matched) {
+        g_d2FrontEnd = (GetModuleHandleA("D2Client.dll") == NULL) ||
+                       ((g_d2Frame - g_d2CliDrawn) > 3u);
+    }
 
     /* Sample what the game believes, into memory only.  Sparse, because a
        freeze loses the buffer anyway and the setup-time record is the part
