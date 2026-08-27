@@ -410,7 +410,18 @@ static BOOL WriteCode(unsigned char *at, const unsigned char *bytes,
 ** locale machinery; it has no float conversion, so print fixed point.
 */
 
-#define GAMEFIX_LOG_CAP  (32u * 1024u)
+/*
+** 32K was not enough once the trace could re-arm: 94 sites x 3 samples, plus
+** a backtrace line each, fills it in about three seconds -- so a panel opened
+** after that was recorded nowhere and the log merely looked uneventful.
+**
+** The reserve exists because the LOG FULL notice itself needs room.  At 32K
+** the buffer stopped five bytes short of the cap, the notice did not fit, and
+** a truncated log read as a complete one.  A diagnostic that can fail to say
+** it stopped is worse than one that stops.
+*/
+#define GAMEFIX_LOG_CAP    (192u * 1024u)
+#define GAMEFIX_LOG_NOTICE 24u          /* always kept free for the notice */
 
 static char         g_logBuf[GAMEFIX_LOG_CAP];
 static unsigned int g_logLen   = 0;
@@ -474,14 +485,14 @@ void GameFix_Log(const char *fmt, ...)
     va_end(ap);
 
     if (n < 0) return;
-    if (g_logLen + (unsigned int)n + 2 >= GAMEFIX_LOG_CAP) {
+    if (g_logLen + (unsigned int)n + 2 >= GAMEFIX_LOG_CAP - GAMEFIX_LOG_NOTICE) {
         /* Say so rather than falling silent.  A diagnostic that stops
-           recording looks exactly like an event that never happened. */
+           recording looks like an event that never happened.  The room for
+           saying so is reserved above, so it cannot itself be what
+           does not fit. */
         g_logFull = 1;
-        if (g_logLen + 24 < GAMEFIX_LOG_CAP) {
-            memcpy(g_logBuf + g_logLen, "-- LOG FULL --\r\n", 16);
-            g_logLen += 16;
-        }
+        memcpy(g_logBuf + g_logLen, "-- LOG FULL --\r\n", 16);
+        g_logLen += 16;
         g_logDirty = 1;
         GameFix_LogFlush();
         return;
@@ -1600,6 +1611,8 @@ static const D2Hook g_d2Hooks[] = {
 #define ADJ_X_NONE   0
 #define ADJ_X_ADD    1    /* x += cx : left-anchored, wants centring  */
 #define ADJ_X_SUB    2    /* x -= cx : right-pinned, wants un-pinning */
+#define ADJ_X_RIGHT  4    /* x += W-800 : belongs at the RIGHT edge, so it
+                           * moves the whole difference, not half of it */
 /*
 ** Pick the direction from which half of the screen the element is in.  Not a
 ** shortcut -- the only rule that fits: gfx#10067 at +0a7254 draws BOTH the
@@ -1616,6 +1629,10 @@ static const D2Hook g_d2Hooks[] = {
 typedef struct {
     unsigned int  tag;      /* unused in matching; kept for readability */
     unsigned int  rva;      /* caller's return address, as an RVA */
+    int           xlo;      /* x qualifier; xlo==xhi==0 means "any x" */
+    int           xhi;
+    int           ylo;      /* y qualifier; ylo==yhi==0 means "any y" */
+    int           yhi;
     unsigned char xmode;
     unsigned char ymode;
     const char   *what;
@@ -1623,21 +1640,106 @@ typedef struct {
 
 static const D2Fix2D g_d2Fix2D[] = {
     /* control panel: frame, inlay, orb liquid and the icon beside each orb */
-    { D2_TAG_CLIENT, 0x06d54eu, ADJ_X_AUTO, ADJ_Y_NONE,   "orb frame L"  },
-    { D2_TAG_CLIENT, 0x06d62bu, ADJ_X_AUTO, ADJ_Y_NONE,   "orb frame R"  },
-    { D2_TAG_CLIENT, 0x06df5au, ADJ_X_AUTO, ADJ_Y_NONE,   "orb inlay L"  },
-    { D2_TAG_CLIENT, 0x06ddd3u, ADJ_X_AUTO, ADJ_Y_NONE,   "orb inlay R"  },
-    { D2_TAG_CLIENT, 0x06df2du, ADJ_X_AUTO, ADJ_Y_NONE,   "orb liquid L" },
-    { D2_TAG_CLIENT, 0x06dda2u, ADJ_X_AUTO, ADJ_Y_NONE,   "orb liquid R" },
-    { D2_TAG_CLIENT, 0x0a7254u, ADJ_X_AUTO, ADJ_Y_NONE,   "orb icon L+R" },
+
+    /*
+    ** The RIGHT-HAND panel: inventory and skill tree.
+    **
+    ** Its background image is positioned from the live screen width and
+    ** lands correctly at the right edge; the frame over it and the
+    ** equipped items inside it are not.  The frame's coordinates are
+    ** hardcoded immediates -- `push 0x190` is the 400 -- so there is no
+    ** global to correct and each site needs a row.
+    **
+    ** These move by W-800, not by cx: the panel is pinned to the RIGHT
+    ** edge, so it travels the full difference rather than half of it.
+    ** At 1432 that is 632 against cx's 316 -- getting this wrong leaves
+    ** the frame exactly half way to where it belongs.
+    */
+    { D2_TAG_CLIENT, 0x06d215u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 400,63 */
+    { D2_TAG_CLIENT, 0x06d237u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 544,253 */
+    { D2_TAG_CLIENT, 0x06d259u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 713,484 */
+    { D2_TAG_CLIENT, 0x06d27bu, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 544,553 */
+    { D2_TAG_CLIENT, 0x06d29du, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 400,553 */
+
+    { D2_TAG_CLIENT, 0x09e0e2u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 535,217 */
+    { D2_TAG_CLIENT, 0x09e127u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 536,263 */
+    { D2_TAG_CLIENT, 0x09e16cu, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 651,290 */
+    { D2_TAG_CLIENT, 0x09e1b0u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 535,118 */
+    { D2_TAG_CLIENT, 0x09e1f5u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 420,292 */
+    { D2_TAG_CLIENT, 0x09e23au, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 609,118 */
+    { D2_TAG_CLIENT, 0x09e27fu, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 495,263 */
+    { D2_TAG_CLIENT, 0x09e2c4u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 609,263 */
+    { D2_TAG_CLIENT, 0x09e393u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 651,217 */
+
+    { D2_TAG_CLIENT, 0x06d54eu, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb frame L"  },
+    { D2_TAG_CLIENT, 0x06d62bu, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb frame R"  },
+    { D2_TAG_CLIENT, 0x06df5au, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb inlay L"  },
+    { D2_TAG_CLIENT, 0x06ddd3u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb inlay R"  },
+    { D2_TAG_CLIENT, 0x06df2du, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb liquid L" },
+    { D2_TAG_CLIENT, 0x06dda2u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb liquid R" },
+    { D2_TAG_CLIENT, 0x0a7254u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb icon L+R" },
     /* belt: raw 800x600, so it needs the vertical offset as well */
-    { D2_TAG_CLIENT, 0x05f597u, ADJ_X_AUTO, ADJ_Y_BOTTOM, "belt items"   },
-    { D2_TAG_CLIENT, 0x06f2a8u, ADJ_X_AUTO, ADJ_Y_BOTTOM, "belt digits"  }
+    /*
+    ** +05f597 is a SHARED item helper: the belt uses it and so does the
+    ** inventory grid.  They want different corrections -- the belt is centred
+    ** with the control panel (cx), the inventory sits in the right-hand panel
+    ** (W-800) -- so one rule per call site is not enough here.
+    **
+    ** Split on y, which comes from the draw's own arguments rather than from
+    ** the stack: the belt is a strip along the bottom at y=590, the inventory
+    ** grid runs y=190..430.  The caller chain says the same thing
+    ** independently (belt via +06f18f, inventory via +099f48 and +099c1e), so
+    ** the split is corroborated without having to correct on the back-trace,
+    ** which is a heuristic and not something to patch on by itself.
+    **
+    ** BOTH rows are qualified, and the belt one especially.  Once the grid
+    ** origin moved, grid items began arriving already correct at x=1167..1312
+    ** -- past the equip row's band -- and fell through into an unqualified
+    ** belt row, which cheerfully applied ADJ_X_AUTO and threw them 316 left,
+    ** into the open world.  A catch-all row at the end of a fall-through chain
+    ** is a trap: it fires for exactly the cases nobody thought about.
+    **
+    ** Specific row first: the match loop stops at the first hit.
+    */
+    { D2_TAG_CLIENT, 0x05f597u, 0, 799, 0, 499, ADJ_X_RIGHT, ADJ_Y_NONE, "inv equip item" },
+    { D2_TAG_CLIENT, 0x05f597u, 0, 0, 500, 700, ADJ_X_AUTO, ADJ_Y_BOTTOM, "belt items"   },
+    { D2_TAG_CLIENT, 0x06f2a8u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_BOTTOM, "belt digits"  },
+
+    /* The orb tooltip's own x is hardcoded too -- `mov edx,0x41` is the stock
+       orb centre, 65 -- so the string needs moving even once its hover region
+       has.  AUTO rather than ADD: if the mana orb shares this call site, the
+       right-hand one has to travel the other way. */
+    { D2_TAG_CLIENT, 0x06d7b8u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE, "life tooltip" },
+
+    /* The mana tooltip is a SEPARATE call site: its x is W - width/2 - 80,
+       computed from the live screen width, so it lands hard against the
+       right edge rather than at a stock constant.  AUTO sends it back in
+       by cx, matching the orb it belongs to. */
+    { D2_TAG_CLIENT, 0x06d877u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE, "mana tooltip" }
+
+    /*
+    ** The skill-selection popup is deliberately NOT moved.
+    **
+    ** Moving it (+0a7160, one call site drawing both sides at 80,128 and
+    ** 1208,1256,1304) works visually and immediately breaks picking a skill:
+    ** its entries stop being selectable, because the popup's hit regions stay
+    ** where the art used to be.  Same split as everywhere else in this file.
+    **
+    ** Correcting it properly means finding those regions.  The draw is inside
+    ** a helper at 6fb57070 that takes x in eax from its caller, so the layout
+    ** base is one hop away and the hit test another -- and the popup is
+    ** transient UI.  A popup at the screen edge that WORKS beats one in the
+    ** right place that does not, so this stays stock until the regions are
+    ** found.  The row is kept, commented, so the site is not lost:
+    **
+    **   { D2_TAG_CLIENT, 0x0a7160u, 0,0, 0,0, ADJ_X_AUTO, ADJ_Y_NONE, "skill popup" }
+    */
 };
 #define D2_FIX2D_N (sizeof(g_d2Fix2D) / sizeof(g_d2Fix2D[0]))
 
 static int            g_d2Trace    = 0;
 static int            g_d2Menu     = 1;   /* centre the front end */
+static int            g_d2InvGrid  = 1;   /* move the inventory grid origin */
 static int            g_d2FrontEnd = 0;   /* front end up -- see GameFix_Tick */
 static unsigned int   g_d2Frame     = 0;   /* grBufferSwap count, for the below */
 static unsigned int   g_d2CliDrawn  = 0;   /* last frame D2Client drew anything */
@@ -1660,6 +1762,76 @@ static unsigned char *g_d2Stub[D2_HOOKS];
 static unsigned int  g_traceSite[D2_TRACE_SITES];
 static unsigned char g_traceHits[D2_TRACE_SITES];
 static unsigned int  g_traceSites = 0;
+static unsigned int  g_traceEvery = 0;   /* frames between budget re-arms */
+
+/*
+** The watch box.
+**
+** The per-site budget answers "what draws exist", but an element you can SEE
+** on screen can still be missing from the log: its call site shares an RVA
+** with something that draws constantly, so the three samples are gone before
+** the interesting draw happens.  That is how the item tooltip stayed invisible
+** to the trace while sitting in plain view in a screenshot.
+**
+** So: name a rectangle from the screenshot and every draw landing in it is
+** logged, budget or no budget.  It is the one instrument that starts from
+** where the pixels are rather than from which function drew them.
+**
+** [Diablo2] watchbox=x0,y0,x1,y1   (empty or 0,0,0,0 = off)
+*/
+#define D2_BOX_MAX     400u
+#define D2_BOX_PERSITE 4u     /* per call site, so one busy site cannot own it */
+static int          g_box[4] = { 0, 0, 0, 0 };
+static int          g_boxOn  = 0;
+static unsigned int g_boxHits = 0;
+static unsigned int g_boxSite[64];
+static unsigned char g_boxSiteHits[64];
+static unsigned int g_boxSites = 0;
+
+/*
+** The box needs its own per-site budget as much as the trace does.
+**
+** Aimed at the control panel it filled its 400 records with the same dozen
+** panel draws -- 65 hits apiece -- and the element actually being looked for
+** never got a line.  A global cap answers "what draws here" only until one
+** busy site drowns the rest.
+*/
+static int BoxAllow(unsigned int tag, unsigned int rva)
+{
+    unsigned int id = (tag << 24) ^ (rva & 0xffffffu);
+    unsigned int i;
+
+    for (i = 0; i < g_boxSites; i++) {
+        if (g_boxSite[i] != id) continue;
+        if (g_boxSiteHits[i] >= (unsigned char)D2_BOX_PERSITE) return 0;
+        g_boxSiteHits[i]++;
+        return 1;
+    }
+    if (g_boxSites >= 64u) return 0;
+    g_boxSite[g_boxSites] = id;
+    g_boxSiteHits[g_boxSites] = 1;
+    g_boxSites++;
+    return 1;
+}
+
+/*
+** Hand every site its allowance back.
+**
+** A per-site budget answers "which call sites exist", but not "what does this
+** site do LATER".  A panel opened a minute into the session is drawn from a
+** shared helper whose three samples went in the first second on something
+** else, so the draw that matters is silent exactly when you need it -- which
+** is what hid the inventory frame.
+**
+** [Diablo2] traceevery=N re-arms every site every N frames, turning the trace
+** from a one-shot census into a repeating window: open a panel, wait a window,
+** read its draws.  The site LIST is kept, so identity stays stable.
+*/
+static void TraceRearm(void)
+{
+    unsigned int i;
+    for (i = 0; i < g_traceSites; i++) g_traceHits[i] = 0;
+}
 
 /* Returns non-zero while this site still has allowance left. */
 static int TraceAllow(unsigned int tag, unsigned int rva)
@@ -1789,9 +1961,14 @@ static void __cdecl D2Dispatch(unsigned int tag, unsigned int ra,
                table fragile against reordering the hook list. */
             for (i = 0; i < D2_FIX2D_N; i++) {
                 if (g_d2Fix2D[i].rva != rva) continue;
+                if (g_d2Fix2D[i].xhi != 0 &&
+                    (*px < g_d2Fix2D[i].xlo || *px > g_d2Fix2D[i].xhi)) continue;
+                if (g_d2Fix2D[i].yhi != 0 &&
+                    (*py < g_d2Fix2D[i].ylo || *py > g_d2Fix2D[i].yhi)) continue;
                 switch (g_d2Fix2D[i].xmode) {
                 case ADJ_X_ADD:  *px += cx; break;
                 case ADJ_X_SUB:  *px -= cx; break;
+                case ADJ_X_RIGHT: *px += (int)g_targetW - 800; break;
                 case ADJ_X_AUTO:
                     *px += (*px * 2 < (int)g_targetW) ? cx : -cx; break;
                 default: break;
@@ -1814,6 +1991,22 @@ static void __cdecl D2Dispatch(unsigned int tag, unsigned int ra,
     ** the right one and the element is still wrong" look identical, which cost
     ** a round trip.
     */
+    /*
+    ** The watch box first, and outside the budget: the whole point is to see
+    ** draws the budget is hiding.  Reports the INCOMING position, since that
+    ** is what a rule would have to match on.
+    */
+    if (g_boxOn && g_boxHits < D2_BOX_MAX && px && py &&
+        rva != 0x04afafu &&        /* the rain: hundreds of lines a frame, and
+                                    * it once ate 222 of a 400-record budget */
+        x0 >= g_box[0] && x0 <= g_box[2] &&
+        y0 >= g_box[1] && y0 <= g_box[3] &&
+        BoxAllow(tag, rva)) {
+        g_boxHits++;
+        GameFix_Log("WATCH %-14s +%06x  (%d,%d)%s%s", h->label, rva, x0, y0,
+                    applied ? " -> already fixed: " : "", applied ? what : "");
+    }
+
     if (g_d2Trace && TraceAllow(tag, rva)) {
         nu = WalkCallers(h, args, up);
 
@@ -1964,6 +2157,621 @@ static void Diablo2InstallDrawHook(void)
 ** returning a room's precomputed neighbours -- and reaching past it means
 ** touching game state, not presentation.
 */
+/*
+** Dump D2Client's panel GRID descriptors.
+**
+** The inventory's art and its clickable cells had parted company: we moved the
+** panel to the right edge, but the blue/green overlay the game paints under
+** the cursor -- which IS the hit-test grid -- stayed at 800x600 coordinates.
+** No draw rule can reconcile that; the game's own idea of where the grid lives
+** has to move.
+**
+** The item draw shows where that idea comes from.  At +099f48:
+**
+**     mov   edx,[esi+0x04]        ; grid origin X
+**     mov   ecx,[esi+0x0c]        ; grid origin Y
+**     movzx ecx,BYTE [esi+0x14]   ; cell width
+**     movzx eax,BYTE [esi+0x15]   ; cell height
+**     x = originX + col*cellW ;  y = originY + row*cellH
+**
+** and esi is one of seven static descriptors chosen by panel type.  They live
+** past the end of D2Client's raw .data, so they are zero in the file and are
+** filled at run time -- which is why they can only be read here, and why they
+** can be corrected here too.
+**
+** Dumped before anything is written: which descriptor is the inventory, and
+** which belong to the stash, cube and vendor, is a question for the log rather
+** than for a guess.  Shifting the wrong one moves a panel that was correct.
+*/
+/*
+** Move the EQUIPMENT slot rectangles.
+**
+** Same fault as the inventory grid, one level up: the equipped items were
+** painted in the right place by draw rules while their click areas stayed at
+** 800x600 coordinates, so an item was visible in one place and pickable in
+** another.
+**
+** The slot draw shows where the coordinates come from -- a per-slot base plus
+** a small per-slot nudge:
+**
+**     x = [0x6fb9e730] + [0x6fbccc58]     ; nudge + base
+**     y = [0x6fb9e734] + [0x6fbccc64]
+**
+** The nudges are the -1s and -2s at 0x6fb9e7xx and are not the problem.  The
+** bases are ten descriptors at 0x6fbccba0, stride 0x14, laid out exactly like
+** the inventory grid's: x at +4, y at +0xc.  Ten is the number of equipment
+** slots Diablo II has, which is the check that the stride is right.
+**
+** Guarded on the x still being in the STOCK RIGHT-PANEL band.  That is what
+** makes it both idempotent and self-selecting: a descriptor already moved
+** reads >= 800 and is skipped, and anything belonging to a left-hand panel
+** sits at 100..200 and is never touched.  Blind-patching a table by index is
+** how a panel that was correct gets moved.
+*/
+#define D2_EQUIP_BASE   0x6fbccba0u
+#define D2_EQUIP_STRIDE 0x14u
+#define D2_EQUIP_N      10u
+
+static void Diablo2FixupEquipSlots(void)
+{
+    HMODULE      cli = GetModuleHandleA("D2Client.dll");
+    unsigned int i, a, x, moved = 0;
+
+    if (!cli || !g_d2InvGrid || g_targetW <= 800u) return;
+    for (i = 0; i < D2_EQUIP_N; i++) {
+        unsigned int r = 0, d = g_targetW - 800u;
+        a = D2_EQUIP_BASE + i * D2_EQUIP_STRIDE + 0x04u;
+        if (!ReadModuleGlobal(cli, a, &x)) continue;
+        if (x < 400u || x >= 800u) continue;         /* empty, moved, or not ours */
+        if (!ReadModuleGlobal(cli, a + 0x04u, &r)) continue;
+
+        /* Left AND right: these rects are hit-tested the same way the
+           inventory grid is, so a half-moved box rejects every position. */
+        if (WriteModuleGlobal(cli, a, x + d) &&
+            WriteModuleGlobal(cli, a + 0x04u, r + d)) {
+            GameFix_Log("  equip slot %u: x %u..%u -> %u..%u", i, x, r,
+                        x + d, r + d);
+            moved++;
+        }
+    }
+    if (moved) GameFix_Log("equipslots: moved %u of %u", moved, D2_EQUIP_N);
+}
+
+/*
+** Move the INVENTORY grid, origin and all.
+**
+** This is the one correction so far that is not a draw hook, and it has to be:
+** the blue/green overlay Diablo II paints under the cursor is not decoration,
+** it is the hit-test grid.  Shifting only the art left the clickable cells at
+** 800x600 coordinates -- the item was drawn in one place and could be picked
+** up in another.  No number of draw rules reconciles that; the game's own idea
+** of where the grid lives is what has to move.
+**
+** The dump identified it beyond doubt.  Of the seven panel descriptors,
+** 6fbb16f0 holds originX=419, originY=315, 29x29 cells, and every traced item
+** lands exactly on that lattice:
+**
+**     (680,401) -> col 9 row 3      (651,404) -> col 8 row 3
+**     (680,430) -> col 9 row 4
+**
+** The other six sit at x=100..198 -- the LEFT-hand panels, stash and cube and
+** vendor, which are already correct and must not be touched.  That is why the
+** descriptor is named rather than searched for.
+**
+** 419 is 19 inside the stock panel's left edge of 400; our panel starts at
+** 1032, so the origin belongs at 1051 -- which is also 419 + (W-800).  The two
+** derivations agreeing is the check that this is the right constant.
+**
+** Guarded on the value still being the stock one, so it is idempotent: the
+** descriptors are filled lazily and may be repopulated, and adding the shift
+** twice would put the grid off the right of the screen.
+*/
+#define D2_INV_GRID   0x6fbb16f0u
+/*
+** The PANEL gate, which sits in front of everything else.
+**
+**     6fb40660:  cmp x,[6fbb1608] jl reject   ; panel left
+**                cmp x,[6fbb160c] jge reject  ; panel right
+**                cmp y,[6fbb1610] jl reject   ; panel top
+**                cmp y,[6fbb1614] jg reject   ; panel bottom
+**
+** No inner rectangle is consulted unless this passes.  Moving the grid and the
+** slot rects while leaving this behind is what made the inventory stop
+** responding ANYWHERE: over the panel the gate rejected, and over the old
+** position the gate passed but the inner rects had moved out from under it.
+** A gate that fails closed hides every correction behind it.
+*/
+#define D2_INV_PANEL_L 0x6fbb1608u
+#define D2_INV_PANEL_R 0x6fbb160cu
+
+#define D2_INV_LEFT   (D2_INV_GRID + 0x04u)
+#define D2_INV_RIGHT  (D2_INV_GRID + 0x08u)
+
+/*
+** Move a hardcoded HOVER REGION.
+**
+** The orbs and the ability icons are the one part of the UI that Diablo II
+** pins to the screen CORNERS, so their hover tests read like this (the health
+** orb, at +06d6f3):
+**
+**     mov edx,[esp+0x10]      ; mouse X
+**     cmp edx,0x1e            ; 30       <- hardcoded
+**     jl  reject
+**     cmp edx,0x6e            ; 110      <- hardcoded
+**     jg  reject
+**     mov eax,ds:0x6fba7038   ; screen H -- LIVE, so Y already follows
+**     lea esi,[eax-0x4b] ...  ; H-75 .. H-15
+**
+** Note the asymmetry: vertical is computed from the live screen height and has
+** been right all along; only horizontal is frozen at 800x600.  That is why the
+** orbs' Y behaviour never needed touching.
+**
+** 30+316 does not fit in the imm8 those compares use, so the values cannot
+** simply be rewritten.  Instead the seven bytes of `mov` + first `cmp` are
+** replaced by a call to a stub that normalises the mouse INTO stock space:
+**
+**     mov edx,[esp+N+4]       ; the mouse X the original read (+4 for the
+**                             ; return address the call just pushed)
+**     sub edx,cx              ; back into 800x600 coordinates
+**     cmp edx,<imm8>          ; the compare that was displaced
+**     ret                     ; ret does not touch flags, so the jl still works
+**
+** and every later compare in the sequence then works unmodified, because edx
+** is left holding the normalised value.  One stub covers a whole region test
+** rather than one compare.
+*/
+/*
+** Two shapes, because the two orbs are anchored to opposite corners.
+**
+** LEFT-anchored (health): `mov edx,[esp+N] ; cmp edx,imm8`, 7 bytes.  The art
+** moved +cx, so the mouse is normalised back by SUBTRACTING cx.
+**
+** RIGHT-anchored (mana): `mov ecx,ds:<screen width>`, 6 bytes, and the bounds
+** that follow are W-relative rather than immediates.  The art moved -cx, so
+** the mouse is normalised by ADDING cx.  The displaced instruction is simply
+** re-issued inside the stub.
+**
+** Both leave the register holding a stock-space X, so every remaining compare
+** in the sequence works untouched.
+*/
+#define HITFIX_LEFT   0   /* mov edx,[esp+N] ; cmp edx,imm8   -> sub */
+#define HITFIX_RIGHT  1   /* mov ecx,ds:width                 -> add */
+
+typedef struct {
+    unsigned int  rva;      /* the instruction being replaced */
+    unsigned char kind;
+    unsigned char espOff;   /* N in [esp+N] holding the mouse X */
+    unsigned char cmpImm;   /* LEFT: imm8 of the cmp that follows */
+    unsigned int  global;   /* RIGHT: the global the mov reads */
+    const char   *what;
+} D2HitFix;
+
+static const D2HitFix g_d2HitFix[] = {
+    { 0x06d6f3u, HITFIX_LEFT,  0x10u, 0x1eu, 0u,          "health orb hover" },
+    { 0x06d7cbu, HITFIX_RIGHT, 0x10u, 0u,    0x6fba7034u, "mana orb hover"   }
+};
+#define D2_HITFIX_N (sizeof(g_d2HitFix) / sizeof(g_d2HitFix[0]))
+
+/*
+** Replace a whole REGION TEST, rather than normalising a register.
+**
+** The ability icons cannot use the stub-and-reload trick the orbs do.  Their
+** tests live in a chain that shares one register, and after the chain falls
+** through the mouse X is handed on:
+**
+**     6fb1e29c:  mov ecx,edi
+**     6fb1e29e:  call 0x6fb1c680
+**
+** so shifting the register would corrupt whatever that handles.  Instead the
+** two compares and their two branches are replaced outright by a call that
+** sets the flags and one branch that consumes them:
+**
+**     push edx                    ; the game's edx is not ours to spend
+**     lea  edx,[reg - low]        ; low = where the icon actually IS now
+**     cmp  edx, span              ; unsigned: below-or-equal means inside
+**     pop  edx                    ; pop does not disturb flags
+**     ret                         ; nor does ret
+**
+**   ... call stub ; ja <the original reject target> ; nop padding
+**
+** One `ja` replaces a `jl`/`jg` pair because the subtraction turns a range
+** test into a single unsigned comparison -- anything below the region wraps to
+** a huge value and fails the same test as anything above it.
+**
+** The displacement is where the icon sits AFTER our draw rules moved it, so
+** left and right differ only in that constant:
+**
+**     left   x - (0x75 + cx)      ; art moved +cx
+**     right  x - ((W - 0xa5) - cx); art moved -cx
+*/
+typedef struct {
+    unsigned int  rva;        /* first byte replaced */
+    unsigned char len;        /* how many bytes, >= 7 */
+    unsigned char modrm;      /* 0x97 = lea edx,[edi+d]; 0x96 = [esi+d] */
+    unsigned char span;       /* inclusive width of the region */
+    unsigned char jaRel;      /* rel8 of the ja we emit at rva+5 */
+    unsigned char sig[3];     /* first three original bytes, checked */
+    unsigned int  bound;      /* stock low bound */
+    unsigned char fromRight;  /* bound is measured from the screen width */
+    const char   *what;
+} D2RegionFix;
+
+static const D2RegionFix g_d2Region[] = {
+    /* +06e100 -- reached first, but patching it changed nothing on screen, so
+       it is not the handler that acts on a click.  Left in place: it tests the
+       same regions and should agree with the others. */
+    { 0x06e16eu, 13, 0x97, 0x30, 0x31, { 0x83, 0xff, 0x75 }, 0x75u, 0,
+      "ability L (06e100)" },
+    { 0x06e1acu, 17, 0x97, 0x30, 0x35, { 0x8d, 0x91, 0x5b }, 0xa5u, 1,
+      "ability R (06e100)" },
+
+    /* +06f3b0 IS the handler that acts: on a match it calls 0x6facc190 with
+       the skill selectors in ecx/edx.  Note the registers are the other way
+       round here -- esi is the mouse X (movzx esi,[ebp+0xc]), where +06e100
+       used edi -- which is why the modrm differs. */
+    { 0x06f618u, 13, 0x96, 0x30, 0x4bu, { 0x83, 0xfe, 0x75 }, 0x75u, 0,
+      "ability L click" },
+    { 0x06f78fu, 13, 0x96, 0x30, 0x69u, { 0x83, 0xfe, 0x75 }, 0x75u, 0,
+      "ability L click 2" },
+
+    /*
+    ** The ORB click regions, which toggle the permanent value display.
+    **
+    ** Their hover regions were corrected long before these were, so the
+    ** tooltips followed the orbs while the toggle still lived out at the
+    ** screen corner -- clicking there pinned the mana readout on, which looked
+    ** like a bug in the tooltip and was in fact the game's own feature being
+    ** triggered from the old position.  0x6fbcd00c is written in exactly one
+    ** place, +06e275, on this region's success path.
+    **
+    ** Span 0x50 rather than 0x30: the orbs are wider than the ability icons.
+    */
+    { 0x06e1e8u, 10, 0x97, 0x50, 0x51u, { 0x83, 0xff, 0x1e }, 0x1eu, 0,
+      "health orb click" },
+    { 0x06e240u, 14, 0x97, 0x50, 0x55u, { 0x8d, 0x51, 0x91 }, 0x6fu, 1,
+      "mana orb click" }
+};
+#define D2_REGION_N (sizeof(g_d2Region) / sizeof(g_d2Region[0]))
+
+/*
+** The RIGHT-hand twins are edited in place instead of being replaced.
+**
+** They compute their bounds from a base register and, crucially, MODIFY it as
+** part of the test:
+**
+**     lea edx,[ebx-0xa5] ; cmp esi,edx ; jl reject
+**     add ebx,-0x75      ; cmp esi,ebx ; jg reject
+**
+** Replacing the block wholesale would drop that `add`, so instead the lea's
+** disp32 is rewritten to the icon's real position and the second bound is
+** taken from edx rather than the base:
+**
+**     lea edx,[ebx-(0xa5+cx)] ; cmp esi,edx ; jl reject
+**     add edx,0x30            ; cmp esi,edx ; jg reject
+**
+** Same length, same branches, same targets -- only two constants and one
+** register field change, and the base register is left untouched rather than
+** half-updated.
+*/
+typedef struct {
+    unsigned int  rva;
+    unsigned char modrm;      /* 0x93 = [ebx+d], 0x95 = [ebp+d] */
+    unsigned char addReg;     /* the `add <base>,imm8` byte we replace */
+    unsigned char cmpReg;     /* the `cmp esi,<base>` second byte */
+    unsigned int  bound;
+    const char   *what;
+} D2RegionInPlace;
+
+static const D2RegionInPlace g_d2RegionIP[] = {
+    { 0x06f66au, 0x93, 0xc3, 0xf3, 0xa5u, "ability R click" },
+    { 0x06f7ffu, 0x95, 0xc5, 0xf5, 0xa5u, "ability R click 2" }
+};
+#define D2_REGIONIP_N (sizeof(g_d2RegionIP) / sizeof(g_d2RegionIP[0]))
+
+static void Diablo2FixupRegionsInPlace(unsigned int cx)
+{
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned int   i;
+    unsigned char *at;
+    unsigned char  code[17];
+    int            disp;
+
+    if (!cli) return;
+    for (i = 0; i < D2_REGIONIP_N; i++) {
+        const D2RegionInPlace *r = &g_d2RegionIP[i];
+
+        at = (unsigned char *)((unsigned int)cli + r->rva);
+        if (IsBadReadPtr(at, 17) ||
+            at[0] != 0x8d || at[1] != r->modrm ||
+            at[10] != 0x83 || at[11] != r->addReg || at[12] != 0x8b ||
+            at[13] != 0x3b || at[14] != r->cmpReg) {
+            GameFix_Log("region: %s -- bytes at +%06lx unexpected, skipped",
+                        r->what, (unsigned long)r->rva);
+            continue;
+        }
+
+        memcpy(code, at, 17);
+        disp = -((int)r->bound + (int)cx);
+        PutU32(code + 2, (unsigned int)disp);
+        code[10] = 0x83; code[11] = 0xc2; code[12] = 0x30;  /* add edx,0x30 */
+        code[13] = 0x3b; code[14] = 0xf2;                   /* cmp esi,edx  */
+        if (WriteCode(at, code, 17))
+            GameFix_Log("region: %s +%06lx in place (base%d .. base%d)",
+                        r->what, (unsigned long)r->rva, disp, disp + 0x30);
+        else
+            GameFix_Log("region: %s -- could not write the code", r->what);
+    }
+}
+
+static void Diablo2FixupRegions(unsigned int cx)
+{
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned int   i;
+    unsigned char *at, *stub;
+    unsigned char  code[24];
+    int            disp;
+
+    if (!cli) return;
+    for (i = 0; i < D2_REGION_N; i++) {
+        const D2RegionFix *r = &g_d2Region[i];
+
+        at = (unsigned char *)((unsigned int)cli + r->rva);
+        if (IsBadReadPtr(at, r->len) || memcmp(at, r->sig, 3) != 0) {
+            GameFix_Log("region: %s -- bytes at +%06lx unexpected, skipped",
+                        r->what, (unsigned long)r->rva);
+            continue;
+        }
+
+        disp = r->fromRight
+             ? -((int)(g_targetW - r->bound) - (int)cx)
+             : -((int)r->bound + (int)cx);
+
+        stub = (unsigned char *)VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE,
+                                             PAGE_EXECUTE_READWRITE);
+        if (!stub) { GameFix_Log("region: %s -- no memory", r->what); continue; }
+        stub[0] = 0x52;                             /* push edx */
+        stub[1] = 0x8d; stub[2] = r->modrm;         /* lea edx,[reg+disp32] */
+        PutU32(stub + 3, (unsigned int)disp);
+        stub[7] = 0x83; stub[8] = 0xfa; stub[9] = r->span;   /* cmp edx,span */
+        stub[10] = 0x5a;                            /* pop edx (flags intact) */
+        stub[11] = 0xc3;                            /* ret     (flags intact) */
+
+        code[0] = 0xe8;
+        PutU32(code + 1, (unsigned int)stub - ((unsigned int)at + 5u));
+        code[5] = 0x77; code[6] = r->jaRel;         /* ja <reject> */
+        memset(code + 7, 0x90, (unsigned int)r->len - 7u);
+        if (WriteCode(at, code, r->len))
+            GameFix_Log("region: %s +%06lx -> stub %08lx (inside = x-%d <= %u)",
+                        r->what, (unsigned long)r->rva,
+                        (unsigned long)(unsigned int)stub, -disp, r->span);
+        else
+            GameFix_Log("region: %s -- could not write the code", r->what);
+    }
+}
+
+static int g_hitDone = 0;
+
+static void Diablo2FixupHitRegions(void)
+{
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned int   i, cx;
+    unsigned char *at, *stub;
+    unsigned char  want[7], code[7];
+
+    if (!cli || g_hitDone || !g_d2InvGrid || g_targetW <= 800u) return;
+    g_hitDone = 1;                       /* one attempt, reported either way */
+    cx = (g_targetW - 800u) / 2u;
+
+    for (i = 0; i < D2_HITFIX_N; i++) {
+        const D2HitFix *h = &g_d2HitFix[i];
+
+        unsigned int nWant = (h->kind == HITFIX_LEFT) ? 7u : 6u;
+
+        at = (unsigned char *)((unsigned int)cli + h->rva);
+
+        if (h->kind == HITFIX_LEFT) {
+            want[0] = 0x8b; want[1] = 0x54; want[2] = 0x24; want[3] = h->espOff;
+            want[4] = 0x83; want[5] = 0xfa; want[6] = h->cmpImm;
+        } else {
+            want[0] = 0x8b; want[1] = 0x0d;           /* mov ecx,ds:imm32 */
+            PutU32(want + 2, h->global);
+        }
+        if (IsBadReadPtr(at, nWant) || memcmp(at, want, nWant) != 0) {
+            GameFix_Log("hitfix: %s -- bytes at +%06lx are not what was"
+                        " expected, skipped", h->what, (unsigned long)h->rva);
+            continue;
+        }
+
+        stub = (unsigned char *)VirtualAlloc(NULL, 24, MEM_COMMIT | MEM_RESERVE,
+                                             PAGE_EXECUTE_READWRITE);
+        if (!stub) { GameFix_Log("hitfix: %s -- no memory", h->what); continue; }
+
+        if (h->kind == HITFIX_LEFT) {
+            stub[0] = 0x8b; stub[1] = 0x54; stub[2] = 0x24;
+            stub[3] = (unsigned char)(h->espOff + 4u); /* call pushed a return */
+            stub[4] = 0x81; stub[5] = 0xea;            /* sub edx,imm32 */
+            PutU32(stub + 6, cx);
+            stub[10] = 0x83; stub[11] = 0xfa; stub[12] = h->cmpImm;
+            stub[13] = 0xc3;                           /* ret preserves flags */
+        } else {
+            /*
+            ** RELOAD the mouse rather than adjust edx in place.
+            **
+            ** edx is NOT reloaded between the two orb tests: the health test's
+            ** reject path jumps past the `mov edx,[esp+0x10]` that the pass
+            ** path executes, so edx still holds whatever the health stub left
+            ** -- mouseX - cx.  Adding cx to that restored the original value
+            ** and the region never moved, while the tooltip did, which is
+            ** exactly how it looked on screen.
+            **
+            ** Reading the slot again makes each stub independent of whether
+            ** any earlier one ran.
+            */
+            stub[0] = 0x8b; stub[1] = 0x54; stub[2] = 0x24;
+            stub[3] = (unsigned char)(h->espOff + 4u);
+            stub[4] = 0x81; stub[5] = 0xc2;            /* add edx,imm32 */
+            PutU32(stub + 6, cx);
+            stub[10] = 0x8b; stub[11] = 0x0d;          /* the displaced mov */
+            PutU32(stub + 12, h->global);
+            stub[16] = 0xc3;
+        }
+
+        code[0] = 0xe8;                                /* call rel32 */
+        PutU32(code + 1, (unsigned int)stub - ((unsigned int)at + 5u));
+        code[5] = 0x90; code[6] = 0x90;                /* pad to the old length */
+        if (WriteCode(at, code, nWant))
+            GameFix_Log("hitfix: %s +%06lx -> stub %08lx (mouse x %c= %u)",
+                        h->what, (unsigned long)h->rva,
+                        (unsigned long)(unsigned int)stub,
+                        (h->kind == HITFIX_LEFT) ? '-' : '+', cx);
+        else
+            GameFix_Log("hitfix: %s -- could not write the code", h->what);
+    }
+
+    Diablo2FixupRegions(cx);
+    Diablo2FixupRegionsInPlace(cx);
+}
+
+static void Diablo2FixupInvGrid(void)
+{
+    HMODULE      cli = GetModuleHandleA("D2Client.dll");
+    unsigned int x = 0;
+
+    unsigned int r = 0, d = g_targetW - 800u;
+
+    if (!cli || !g_d2InvGrid || g_targetW <= 800u) return;
+    if (!ReadModuleGlobal(cli, D2_INV_LEFT, &x)) return;
+    if (x == 0u || x >= 800u) return;      /* empty, or already moved */
+    if (!ReadModuleGlobal(cli, D2_INV_RIGHT, &r)) return;
+
+    /*
+    ** BOTH edges, and that is the whole point.  The hit test is a plain
+    ** bounding-box compare:
+    **
+    **     cmp mouseX,[+04] jl reject ; cmp mouseX,[+08] jg reject
+    **     cmp mouseY,[+0c] jl reject ; cmp mouseY,[+10] jg reject
+    **
+    ** so moving the left edge alone leaves "x >= 1051 && x <= 709", which no
+    ** position satisfies -- the grid stops responding to the mouse entirely
+    ** rather than responding in the wrong place.  Vertical is untouched
+    ** because at 600 lines the layout is already stock.
+    */
+    if (WriteModuleGlobal(cli, D2_INV_LEFT,  x + d) &&
+        WriteModuleGlobal(cli, D2_INV_RIGHT, r + d))
+        GameFix_Log("invgrid: grid x %u..%u -> %u..%u", x, r, x + d, r + d);
+
+    /* And the gate in front of it, or none of the above is ever reached. */
+    if (ReadModuleGlobal(cli, D2_INV_PANEL_L, &x) &&
+        ReadModuleGlobal(cli, D2_INV_PANEL_R, &r) &&
+        x < 800u && r > x) {
+        if (WriteModuleGlobal(cli, D2_INV_PANEL_L, x + d) &&
+            WriteModuleGlobal(cli, D2_INV_PANEL_R, r + d))
+            GameFix_Log("invgrid: panel gate x %u..%u -> %u..%u",
+                        x, r, x + d, r + d);
+    }
+}
+
+/*
+** Dump an arbitrary run of dwords out of D2Client, once and then on change.
+**
+** This keeps coming up: an element is visibly wrong, the draw is found, and
+** the coordinates turn out to come from a table in memory that is empty in the
+** file because the game fills it at run time.  Reading it is the only way to
+** know what is in it, and guessing which entry is which has already been shown
+** to be how you move a panel that was correct.
+**
+** [Diablo2] dumpwords=6fb9e700,40   (hex address, decimal count; empty = off)
+*/
+#define D2_DUMP_MAX 64u
+static unsigned int g_dumpAt = 0;
+static unsigned int g_dumpN  = 0;
+
+static void Diablo2DumpWords(void)
+{
+    static unsigned int last[D2_DUMP_MAX];
+    static int          ever = 0;
+    HMODULE      cli = GetModuleHandleA("D2Client.dll");
+    unsigned int cur[D2_DUMP_MAX];
+    unsigned int i;
+    int          changed = 0;
+
+    if (!cli || !g_dumpAt || !g_dumpN) return;
+    for (i = 0; i < g_dumpN; i++) {
+        cur[i] = 0;
+        ReadModuleGlobal(cli, g_dumpAt + i * 4u, &cur[i]);
+        if (cur[i] != last[i]) changed = 1;
+    }
+    if (ever && !changed) return;
+    for (i = 0; i < g_dumpN; i++) last[i] = cur[i];
+    ever = 1;
+
+    GameFix_Log("dump: %u dwords at %08lx", g_dumpN, (unsigned long)g_dumpAt);
+    for (i = 0; i < g_dumpN; i += 4u) {
+        GameFix_Log("  %08lx  %6d %6d %6d %6d",
+                    (unsigned long)(g_dumpAt + i * 4u),
+                    (int)cur[i],
+                    (int)((i + 1u < g_dumpN) ? cur[i + 1u] : 0u),
+                    (int)((i + 2u < g_dumpN) ? cur[i + 2u] : 0u),
+                    (int)((i + 3u < g_dumpN) ? cur[i + 3u] : 0u));
+    }
+}
+
+static void Diablo2DumpGrids(void)
+{
+    static const unsigned int kDesc[] = {
+        0x6fbb1598u, 0x6fbb15e0u, 0x6fbb1680u, 0x6fbb16a8u,
+        0x6fbb16c0u, 0x6fbb16d8u, 0x6fbb16f0u
+    };
+    static unsigned int last[7 * 3];
+    static int          everLogged = 0;
+    HMODULE cli = GetModuleHandleA("D2Client.dll");
+    unsigned int i, x, y, cell, ctrl = 0;
+    unsigned int cur[7 * 3];
+    int changed = 0;
+
+    if (!cli) return;
+
+    /*
+    ** A control read, so "all zero" can be told from "the read is broken".
+    ** 0x6fba7034 is D2Client's live screen width, which Diablo2FixupClient
+    ** has already forced -- if this comes back as the target width the
+    ** accessor works and the descriptors really are empty.
+    */
+    ReadModuleGlobal(cli, 0x6fba7034u, &ctrl);
+
+    for (i = 0; i < 7u; i++) {
+        cur[i * 3 + 0] = cur[i * 3 + 1] = cur[i * 3 + 2] = 0;
+    }
+    for (i = 0; i < 7u; i++) {
+        unsigned int base = 0;
+        switch (i) {
+        case 0: base = 0x6fbb1598u; break;  case 1: base = 0x6fbb15e0u; break;
+        case 2: base = 0x6fbb1680u; break;  case 3: base = 0x6fbb16a8u; break;
+        case 4: base = 0x6fbb16c0u; break;  case 5: base = 0x6fbb16d8u; break;
+        default: base = 0x6fbb16f0u; break;
+        }
+        if (ReadModuleGlobal(cli, base + 0x04u, &x) &&
+            ReadModuleGlobal(cli, base + 0x0cu, &y) &&
+            ReadModuleGlobal(cli, base + 0x14u, &cell)) {
+            cur[i * 3 + 0] = x; cur[i * 3 + 1] = y; cur[i * 3 + 2] = cell;
+        }
+    }
+    for (i = 0; i < 7u * 3u; i++)
+        if (cur[i] != last[i]) changed = 1;
+    if (everLogged && !changed) return;   /* only speak when something moved */
+    for (i = 0; i < 7u * 3u; i++) last[i] = cur[i];
+    everLogged = 1;
+
+    GameFix_Log("grids: panel descriptors (control: D2Client width reads %u,"
+                " expected %u)", ctrl, g_targetW);
+    for (i = 0; i < 7u; i++) {
+        GameFix_Log("  %08lx  x=%-5d y=%-5d cell=%ux%u",
+                    (unsigned long)kDesc[i], (int)cur[i * 3 + 0],
+                    (int)cur[i * 3 + 1], cur[i * 3 + 2] & 0xffu,
+                    (cur[i * 3 + 2] >> 8) & 0xffu);
+    }
+}
+
 static void Diablo2FixupClient(void)
 {
     HMODULE      cli = GetModuleHandleA("D2Client.dll");
@@ -2035,6 +2843,47 @@ static void Diablo2ReadIni(const char *ini)
     g_d2Glide  = (int)GetPrivateProfileIntA("Diablo2", "glide",  1, ini);
     g_d2Trace  = (int)GetPrivateProfileIntA("Diablo2", "traceui", 0, ini);
     g_d2Menu   = (int)GetPrivateProfileIntA("Diablo2", "menu",    1, ini);
+    g_d2InvGrid = (int)GetPrivateProfileIntA("Diablo2", "invgrid", 1, ini);
+    {
+        char w[48];
+        w[0] = 0;
+        GetPrivateProfileStringA("Diablo2", "dumpwords", "", w, sizeof(w), ini);
+        if (w[0]) {
+            const char *p = w;
+            unsigned int v = 0;
+            while (*p && *p != ',') {          /* hex address */
+                char c = *p++;
+                if      (c >= '0' && c <= '9') v = v * 16u + (unsigned int)(c - '0');
+                else if (c >= 'a' && c <= 'f') v = v * 16u + (unsigned int)(c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F') v = v * 16u + (unsigned int)(c - 'A' + 10);
+                else break;
+            }
+            g_dumpAt = v;
+            if (*p == ',') p++;
+            v = 0;
+            while (*p >= '0' && *p <= '9') v = v * 10u + (unsigned int)(*p++ - '0');
+            g_dumpN = (v > D2_DUMP_MAX) ? D2_DUMP_MAX : v;
+        }
+    }
+    g_traceEvery = (unsigned int)GetPrivateProfileIntA("Diablo2", "traceevery",
+                                                       0, ini);
+    {
+        char box[64];
+        box[0] = 0;
+        GetPrivateProfileStringA("Diablo2", "watchbox", "", box, sizeof(box), ini);
+        if (box[0]) {
+            const char *p = box;
+            int i, v, neg;
+            for (i = 0; i < 4 && *p; i++) {
+                while (*p == ' ' || *p == ',') p++;
+                neg = (*p == '-'); if (neg) p++;
+                v = 0;
+                while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+                g_box[i] = neg ? -v : v;
+            }
+            g_boxOn = (g_box[2] > g_box[0] && g_box[3] > g_box[1]);
+        }
+    }
 }
 
 /*
@@ -2318,6 +3167,32 @@ void GameFix_Tick(void)
     if (g_targetRes && (frame % 60u) == 0) {
         Diablo2FixupClient();
         Diablo2InstallDrawHook();      /* D2Client arrives after the menu */
+    }
+
+    /* Once, and late enough that the panels have been populated from the
+       game's data files. */
+    /* Every couple of seconds, but it only logs when a value CHANGES -- the
+       descriptors may well not be filled until a panel is first opened. */
+    if (g_targetRes && (frame % 120u) == 0) Diablo2DumpGrids();
+    if (g_targetRes && (frame % 120u) == 0) Diablo2DumpWords();
+
+    /* Often, and cheap: one read that early-outs once the value is right.
+       The descriptor is filled lazily, so there is no single moment to do
+       this at -- it has to be watched for. */
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupInvGrid();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupEquipSlots();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupHitRegions();
+
+    /* Re-arm the trace, so a panel opened later than the first second still
+       shows up.  Cheap: a clear over the sites actually seen. */
+    if (g_d2Trace && g_traceEvery && (frame % g_traceEvery) == 0) {
+        TraceRearm();
+        g_boxHits = 0;             /* the watch box re-arms with the trace */
+        {
+            unsigned int b;
+            for (b = 0; b < g_boxSites; b++) g_boxSiteHits[b] = 0;
+        }
+        GameFix_Log("trace: re-armed %u sites at frame %u", g_traceSites, frame);
     }
 
     /*
