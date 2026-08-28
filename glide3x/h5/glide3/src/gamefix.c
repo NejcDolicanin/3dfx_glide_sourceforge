@@ -1569,6 +1569,20 @@ static const D2Hook g_d2Hooks[] = {
     */
     { "D2Win.dll",    0x6f8fb0a0u, 0x6f8e0000u, 1, 2, "win gfx#10067" },
 
+    /*
+    ** Candidates for the ABILITY TOOLTIP, trace-only.
+    **
+    ** Its glyphs come out of D2Win's shared blitter at +013629, so the text is
+    ** real but the D2Client call that produced it is not one we hook -- the
+    ** watch box saw the glyphs and no matching cli win#10076.
+    **
+    ** That blitter's function (6f8f34d0) is reached from twelve D2Win exports.
+    ** Of those, D2Client imports exactly three: 10076, which is hooked and is
+    ** the belt digits, and these two.  So the tooltip is one of them.
+    */
+    { "D2Client.dll", 0x6fb7fbc8u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10078" },
+    { "D2Client.dll", 0x6fb7fb50u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10124" },
+
     { "D2Client.dll", 0x6fb7fc58u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli gfx#10013" },
     { "D2Client.dll", 0x6fb7fbc0u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10150" },
     { "D2Client.dll", 0x6fb7fbd0u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10047" },
@@ -1599,7 +1613,7 @@ static const D2Hook g_d2Hooks[] = {
     { "D2Client.dll", 0x6fb7fc5cu, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli gfx#10059" },
     { "D2Client.dll", 0x6fb7fc04u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli gfx#10016" }
 };
-#define D2_HOOKS       31
+#define D2_HOOKS       33
 #define D2_TAG_CLIENT  0u
 #define D2_TAG_WIN     1u
 
@@ -2336,19 +2350,24 @@ static void Diablo2FixupEquipSlots(void)
 */
 #define HITFIX_LEFT   0   /* mov edx,[esp+N] ; cmp edx,imm8   -> sub */
 #define HITFIX_RIGHT  1   /* mov ecx,ds:width                 -> add */
+#define HITFIX_AUTO   2   /* mov ecx,ds:mouseX -- shift the ICON, by eax */
 
 typedef struct {
     unsigned int  rva;      /* the instruction being replaced */
     unsigned char kind;
-    unsigned char espOff;   /* N in [esp+N] holding the mouse X */
-    unsigned char cmpImm;   /* LEFT: imm8 of the cmp that follows */
-    unsigned int  global;   /* RIGHT: the global the mov reads */
+    unsigned char espOff;   /* N in [esp+N] holding the mouse X;
+                            ** AUTO: the left icon's own stock X */
+    unsigned char cmpImm;   /* LEFT: imm8 of the cmp that follows;
+                            ** AUTO: the right icon's inset from W */
+    unsigned int  global;   /* RIGHT/AUTO: the global the mov reads */
     const char   *what;
 } D2HitFix;
 
 static const D2HitFix g_d2HitFix[] = {
     { 0x06d6f3u, HITFIX_LEFT,  0x10u, 0x1eu, 0u,          "health orb hover" },
-    { 0x06d7cbu, HITFIX_RIGHT, 0x10u, 0u,    0x6fba7034u, "mana orb hover"   }
+    { 0x06d7cbu, HITFIX_RIGHT, 0x10u, 0u,    0x6fba7034u, "mana orb hover"   },
+    { 0x0a7350u, HITFIX_AUTO,  117u,  165u,  0x6fbcc950u,
+      "ability tooltip" }
 };
 #define D2_HITFIX_N (sizeof(g_d2HitFix) / sizeof(g_d2HitFix[0]))
 
@@ -2582,7 +2601,7 @@ static void Diablo2FixupHitRegions(void)
             continue;
         }
 
-        stub = (unsigned char *)VirtualAlloc(NULL, 24, MEM_COMMIT | MEM_RESERVE,
+        stub = (unsigned char *)VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE,
                                              PAGE_EXECUTE_READWRITE);
         if (!stub) { GameFix_Log("hitfix: %s -- no memory", h->what); continue; }
 
@@ -2593,6 +2612,56 @@ static void Diablo2FixupHitRegions(void)
             PutU32(stub + 6, cx);
             stub[10] = 0x83; stub[11] = 0xfa; stub[12] = h->cmpImm;
             stub[13] = 0xc3;                           /* ret preserves flags */
+        } else if (h->kind == HITFIX_AUTO) {
+            /*
+            ** The ABILITY TOOLTIP -- hover region AND text, in one stub.
+            **
+            ** 6fb57350 is a helper: "is the mouse over the icon at (eax,esi)?
+            ** if so draw its tooltip", with the icon's own position passed in
+            ** eax.  Every use of eax inside it is that position -- the two
+            ** region compares, the two `lea <r>,[eax+0x30]` upper bounds, and
+            ** the `push eax` that hands the tooltip box its draw X.  Nothing
+            ** returns in eax (the helper ends `ret 0x10`, and eax is reloaded
+            ** on the draw path anyway).
+            **
+            ** So shift the ICON rather than normalise the mouse.  One add moves
+            ** the region and the text together; normalising the mouse could
+            ** only ever fix the region, and left the text at stock -- which is
+            ** exactly how it looked.
+            **
+            ** The gate is the icon's own X, not a half-screen test.  The same
+            ** helper draws the tooltips for entries inside the ability-select
+            ** POPUP, and that popup is deliberately left at its stock position
+            ** (moving its art breaks selection -- see g_d2Fix2D).  A half-screen
+            ** test caught those entries too and pushed their tests off target,
+            ** which is why their tooltips stopped appearing.  Matching the two
+            ** control-panel icons exactly leaves every other caller alone.
+            **
+            **     mov ecx,ds:<mouse x>     ; the displaced instruction
+            **     cmp eax,<left icon x>    ; the left ability icon?
+            **     je  left
+            **     cmp eax,<W - inset>      ; the right one?
+            **     je  right
+            **     ret                      ; anything else: untouched
+            **   left:   add eax,cx  ; ret  ; art moved +cx
+            **   right:  sub eax,cx  ; ret  ; art moved -cx
+            */
+            stub[0] = 0x8b; stub[1] = 0x0d;            /* the displaced mov */
+            PutU32(stub + 2, h->global);
+            stub[6] = 0x3d;                            /* cmp eax,imm32 */
+            PutU32(stub + 7, (unsigned int)h->espOff);
+            stub[11] = 0x74; stub[12] = 0x08;          /* je left  (-> 21) */
+            stub[13] = 0x3d;                           /* cmp eax,imm32 */
+            PutU32(stub + 14, g_targetW - (unsigned int)h->cmpImm);
+            stub[18] = 0x74; stub[19] = 0x09;          /* je right (-> 29) */
+            stub[20] = 0xc3;
+            stub[21] = 0x05;                           /* add eax,imm32 */
+            PutU32(stub + 22, cx);
+            stub[26] = 0xc3;
+            stub[27] = 0x90; stub[28] = 0x90;
+            stub[29] = 0x2d;                           /* sub eax,imm32 */
+            PutU32(stub + 30, cx);
+            stub[34] = 0xc3;
         } else {
             /*
             ** RELOAD the mouse rather than adjust edx in place.
@@ -2620,10 +2689,12 @@ static void Diablo2FixupHitRegions(void)
         PutU32(code + 1, (unsigned int)stub - ((unsigned int)at + 5u));
         code[5] = 0x90; code[6] = 0x90;                /* pad to the old length */
         if (WriteCode(at, code, nWant))
-            GameFix_Log("hitfix: %s +%06lx -> stub %08lx (mouse x %c= %u)",
+            GameFix_Log("hitfix: %s +%06lx -> stub %08lx (%s)",
                         h->what, (unsigned long)h->rva,
                         (unsigned long)(unsigned int)stub,
-                        (h->kind == HITFIX_LEFT) ? '-' : '+', cx);
+                        (h->kind == HITFIX_AUTO) ? "icon x +/- cx at 117/W-165"
+                      : (h->kind == HITFIX_LEFT) ? "mouse x -= cx"
+                      :                            "mouse x += cx");
         else
             GameFix_Log("hitfix: %s -- could not write the code", h->what);
     }
