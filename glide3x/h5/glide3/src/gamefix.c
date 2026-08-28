@@ -1691,6 +1691,33 @@ static const D2Fix2D g_d2Fix2D[] = {
     { D2_TAG_CLIENT, 0x06ddd3u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb inlay R"  },
     { D2_TAG_CLIENT, 0x06df2du, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb liquid L" },
     { D2_TAG_CLIENT, 0x06dda2u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb liquid R" },
+    /*
+    ** The POTION FILL: the band that creeps up the orb while a healing or
+    ** mana potion is still being absorbed.
+    **
+    ** A SECOND gfx#10082 draw per orb, from the same pair of functions as the
+    ** liquid and with the same argument shape -- x in arg 1, y in arg 2 -- but
+    ** it was missed because it is drawn only while a potion is working, so it
+    ** is absent from any trace taken while standing still.
+    **
+    ** The two arms are written differently, which is the same asymmetry the
+    ** rest of the control panel shows:
+    **
+    **   left  6fb1deb3  push 0x1c        x = 28, a constant
+    **   right 6fb1dd62  add ecx,-0x70    x = W-112, off the live width
+    **
+    ** Neither is where the art belongs.  The panel is 800 wide and CENTRED, so
+    ** the right orb lives at (W-800)/2 + 688, not hard against the screen's
+    ** right edge, and the left one is 300 in from a corner it no longer sits
+    ** in.  AUTO reads that off the position itself: 28 moves +cx, W-112 moves
+    ** -cx, exactly as the liquid rules above already do.
+    **
+    ** The right one is included on the strength of the code, not a screenshot.
+    ** A mana potion is rarer than a healing one, so it had simply not been
+    ** tried -- section 9: the arm nobody exercised is still an arm.
+    */
+    { D2_TAG_CLIENT, 0x06ded2u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb potion L" },
+    { D2_TAG_CLIENT, 0x06dd75u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb potion R" },
     { D2_TAG_CLIENT, 0x0a7254u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb icon L+R" },
     /*
     ** +05f597, the SHARED item helper, now has NO rules at all -- and that is
@@ -2716,6 +2743,123 @@ static void Diablo2FixupHitRegions(void)
     Diablo2FixupRegionsInPlace(cx);
 }
 
+/* ------------------------------------------------------------------------ */
+/* Cinematics: measuring the video quad before touching it                    */
+/* ------------------------------------------------------------------------ */
+/*
+** Diablo II's cinematics reach the screen through THIS driver, which is the
+** whole reason they can be resized at all.
+**
+** D2Glide decodes each frame into a buffer of its own -- Smacker through
+** SmackToBuffer, Bink through BinkCopyToBuffer, both resolved inside D2Glide
+** -- uploads it with grTexDownloadMipMap, and draws it as textured quads:
+**
+**   6f856640   the frame draw, called with the video's width in eax and its
+**              height on the stack (6f8569d7 passes the Smacker header's
+**              own [esi+4] and [esi+8])
+**   6f856841   grDrawVertexArrayContiguous(GR_TRIANGLE_FAN, 4, verts, 28)
+**   6f85693b   the same again for the next horizontal tile
+**
+** and the vertex array is a STATIC buffer at 6f867a80, rebuilt every frame.
+** That address is the identifier: no return-address walk, no back-trace, no
+** code patch in D2Glide.  A pointer compare in grDrawVertexArrayContiguous
+** says "this draw is the movie" with certainty, and the fast path when it is
+** not is a single test.
+**
+** Scaling is then a transform on four vertices.  The video is already CENTRED,
+** so a pure scale about the screen centre keeps it centred:
+**
+**     x' = W/2 + (x - W/2) * s        y' = H/2 + (y - H/2) * s
+**
+** and s is the same for every tile, so the tiles stay joined.
+**
+** What is NOT yet known for certain is the geometry the game hands over: the
+** decode buffer is set up with a pitch of 0x200 and the draw splits into 256
+** wide tiles, which does not obviously fit a 640-wide movie, so the tile count
+** and the real frame size are worth measuring rather than deriving.  Section 6
+** of GAME-PATCHING.md: measure, then patch.  This logs the quads exactly as
+** they arrive; the transform goes in once the numbers are in.
+**
+** [Diablo2] videolog=1
+*/
+#define D2_VID_VERTS 0x6f867a80u   /* D2Glide's static video vertex array */
+#define D2_VID_LOG   8u            /* draws to record, then stop          */
+
+static int          g_vidLog   = 0;   /* from the ini                     */
+static void        *g_vidVerts = 0;   /* resolved once D2Glide is mapped  */
+static int          g_vidOn    = 0;   /* both of the above are ready      */
+static unsigned int g_vidSeen  = 0;
+
+/* Resolve the vertex array's live address.  Cheap and idempotent; called from
+   the tick, never from the draw path. */
+static void Diablo2ResolveVideo(void)
+{
+    HMODULE                 gl;
+    const IMAGE_DOS_HEADER *dos;
+    const IMAGE_NT_HEADERS *nt;
+    unsigned int            rva;
+
+    if (g_vidOn || !g_vidLog) return;
+    gl = GetModuleHandleA("D2Glide.dll");
+    if (!gl) return;
+
+    dos = (const IMAGE_DOS_HEADER *)gl;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    nt = (const IMAGE_NT_HEADERS *)((const unsigned char *)gl + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+    if (D2_VID_VERTS < (unsigned int)nt->OptionalHeader.ImageBase) return;
+
+    rva = D2_VID_VERTS - (unsigned int)nt->OptionalHeader.ImageBase;
+    if (rva >= (unsigned int)nt->OptionalHeader.SizeOfImage) return;
+
+    g_vidVerts = (void *)((unsigned char *)gl + rva);
+    g_vidOn    = 1;
+    GameFix_Log("video: watching D2Glide's vertex array at %08lx"
+                " (preferred %08lx, module %08lx)",
+                (unsigned long)(unsigned int)g_vidVerts,
+                (unsigned long)D2_VID_VERTS, (unsigned long)(unsigned int)gl);
+}
+
+/*
+** wvsprintf has no floats, so print hundredths by hand.  Values here are
+** screen and texel coordinates -- small, and never NaN -- so a cast is enough.
+*/
+static void VidFmt(char *out, float v)
+{
+    long whole = (long)v;
+    long frac  = (long)((v - (float)whole) * 100.0f);
+
+    if (frac < 0) frac = -frac;
+    wsprintfA(out, "%ld.%02ld", whole, frac);
+}
+
+void GameFix_VertexArray(unsigned int mode, unsigned int count,
+                         void *pointers, unsigned int stride)
+{
+    const float *v;
+    unsigned int i;
+
+    /* The whole cost when this is not the movie, or not enabled at all. */
+    if (!g_vidOn || pointers != g_vidVerts) return;
+    if (g_vidSeen >= D2_VID_LOG) return;
+    g_vidSeen++;
+
+    GameFix_Log("video draw %u: mode=%u count=%u stride=%u  screen %ux%u",
+                g_vidSeen, mode, count, stride, g_targetW, g_targetH);
+
+    if (stride != 28u || count > 8u) return;
+
+    v = (const float *)pointers;
+    for (i = 0; i < count; i++) {
+        char a[24], b[24], c[24], d[24], e[24], f[24], g[24];
+
+        VidFmt(a, v[0]); VidFmt(b, v[1]); VidFmt(c, v[2]); VidFmt(d, v[3]);
+        VidFmt(e, v[4]); VidFmt(f, v[5]); VidFmt(g, v[6]);
+        GameFix_Log("   v%u  %-9s %-9s %-9s %-9s %-9s %-9s %s",
+                    i, a, b, c, d, e, f, g);
+        v += 7;                                  /* stride 28 / sizeof(float) */
+    }
+}
 /*
 ** Move the BELT slot rects, at their source.
 **
@@ -3190,6 +3334,7 @@ static void Diablo2ReadIni(const char *ini)
     g_d2Menu   = (int)GetPrivateProfileIntA("Diablo2", "menu",    1, ini);
     g_d2InvGrid = (int)GetPrivateProfileIntA("Diablo2", "invgrid", 1, ini);
     g_d2Belt    = (int)GetPrivateProfileIntA("Diablo2", "belt",    1, ini);
+    g_vidLog    = (int)GetPrivateProfileIntA("Diablo2", "videolog", 0, ini);
     {
         char w[48];
         w[0] = 0;
@@ -3529,6 +3674,7 @@ void GameFix_Tick(void)
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupEquipSlots();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupHitRegions();
     if (g_targetRes && (frame % 30u) == 0) Diablo2InstallBeltHook();
+    if ((frame % 30u) == 0) Diablo2ResolveVideo();
 
     /* Re-arm the trace, so a panel opened later than the first second still
        shows up.  Cheap: a clear over the sites actually seen. */

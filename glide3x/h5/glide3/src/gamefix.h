@@ -101,6 +101,21 @@ void GameFix_Tick(void);
 */
 void GameFix_Log(const char *fmt, ...);
 
+/*
+** Called at the top of grDrawVertexArrayContiguous.
+**
+** Diablo II's cinematics are drawn through this entry point, from a STATIC
+** vertex array inside D2Glide, so a pointer compare identifies them exactly --
+** no return-address walking and no code patch in the game.  Everything else
+** costs one test and returns.
+**
+** For now it only measures (see [Diablo2] videolog in gamefix.c); it takes the
+** array by pointer because the transform that resizes the movie will rewrite
+** those vertices in place.
+*/
+void GameFix_VertexArray(unsigned int mode, unsigned int count,
+                         void *pointers, unsigned int stride);
+
 #ifdef __cplusplus
 }
 #endif
