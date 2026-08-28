@@ -1692,32 +1692,44 @@ static const D2Fix2D g_d2Fix2D[] = {
     { D2_TAG_CLIENT, 0x06df2du, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb liquid L" },
     { D2_TAG_CLIENT, 0x06dda2u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb liquid R" },
     { D2_TAG_CLIENT, 0x0a7254u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE,   "orb icon L+R" },
-    /* belt: raw 800x600, so it needs the vertical offset as well */
     /*
-    ** +05f597 is a SHARED item helper: the belt uses it and so does the
-    ** inventory grid.  They want different corrections -- the belt is centred
-    ** with the control panel (cx), the inventory sits in the right-hand panel
-    ** (W-800) -- so one rule per call site is not enough here.
+    ** +05f597, the SHARED item helper, now has NO rules at all -- and that is
+    ** the point, not an omission.
     **
-    ** Split on y, which comes from the draw's own arguments rather than from
-    ** the stack: the belt is a strip along the bottom at y=590, the inventory
-    ** grid runs y=190..430.  The caller chain says the same thing
-    ** independently (belt via +06f18f, inventory via +099f48 and +099c1e), so
-    ** the split is corroborated without having to correct on the back-trace,
-    ** which is a heuristic and not something to patch on by itself.
+    ** Every family of item that reaches this one call site is corrected at its
+    ** own SOURCE, so by the time a draw arrives here it is already right:
     **
-    ** BOTH rows are qualified, and the belt one especially.  Once the grid
-    ** origin moved, grid items began arriving already correct at x=1167..1312
-    ** -- past the equip row's band -- and fell through into an unqualified
-    ** belt row, which cheerfully applied ADJ_X_AUTO and threw them 316 left,
-    ** into the open world.  A catch-all row at the end of a fall-through chain
-    ** is a trap: it fires for exactly the cases nobody thought about.
+    **   inventory grid items    the grid origin, descriptor 6fbb16f0
+    **   equipped items          the ten slot rects at 6fbccba0
+    **   belt items              Diablo2InstallBeltHook, D2Common ord#10689
+    **   stash / cube / vendor   left-hand panels, correct untouched
+    **   the item ON THE CURSOR  drawn at the live mouse, already right
     **
-    ** Specific row first: the match loop stops at the first hit.
+    ** Three rules used to live here.  Two were belt rules, replaced by the
+    ** belt hook.  The last was `inv equip item` -- x 0..799, y 0..499, plus
+    ** (W-800) -- which predates the descriptor fixes and had become redundant
+    ** for the items it was written for, while still firing on the item BEING
+    ** DRAGGED.  That item is drawn from +014e6c and +014ff7, at the mouse
+    ** (x = [6fbcc950] + [6fbcc954] - w/2), through this same helper.  So the
+    ** moment a drag crossed x=800 with y<500 the rule matched and threw the
+    ** item 600px right, to the screen edge, where it then followed the mouse
+    ** at that offset.  It would have done the same to stash and cube items,
+    ** which draw at x=100..198.
+    **
+    ** The lesson this file keeps relearning: a rule keyed on a SHARED call
+    ** site plus a coordinate window is a catch-all, and a catch-all fires for
+    ** the case nobody thought of.  An element that FOLLOWS THE CURSOR cannot
+    ** be qualified by coordinates at all, because it visits all of them.
+    ** Correct at the source, or do not correct.
+    **
+    ** No instrument is left behind for this one: whether the rule was still
+    ** doing something is answered by looking at the character panel.  If the
+    ** equipped items are in their slots, the descriptors are carrying them and
+    ** the rule was dead.  A probe would have been worse than useless here --
+    ** the dragged item passes through the equip band too, so it would fire on
+    ** exactly the case the rule was wrong about.
     */
-    { D2_TAG_CLIENT, 0x05f597u, 0, 799, 0, 499, ADJ_X_RIGHT, ADJ_Y_NONE, "inv equip item" },
-    { D2_TAG_CLIENT, 0x05f597u, 0, 0, 500, 700, ADJ_X_AUTO, ADJ_Y_BOTTOM, "belt items"   },
-    { D2_TAG_CLIENT, 0x06f2a8u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_BOTTOM, "belt digits"  },
+
 
     /* The orb tooltip's own x is hardcoded too -- `mov edx,0x41` is the stock
        orb centre, 65 -- so the string needs moving even once its hover region
@@ -1754,6 +1766,7 @@ static const D2Fix2D g_d2Fix2D[] = {
 static int            g_d2Trace    = 0;
 static int            g_d2Menu     = 1;   /* centre the front end */
 static int            g_d2InvGrid  = 1;   /* move the inventory grid origin */
+static int            g_d2Belt     = 1;   /* shift the belt slot rects       */
 static int            g_d2FrontEnd = 0;   /* front end up -- see GameFix_Tick */
 static unsigned int   g_d2Frame     = 0;   /* grBufferSwap count, for the below */
 static unsigned int   g_d2CliDrawn  = 0;   /* last frame D2Client drew anything */
@@ -2703,6 +2716,267 @@ static void Diablo2FixupHitRegions(void)
     Diablo2FixupRegionsInPlace(cx);
 }
 
+/*
+** Move the BELT slot rects, at their source.
+**
+** The four quick-item slots looked right and did not work: the potions sat in
+** the middle of the control panel where they belong, but nothing highlighted
+** under the cursor and nothing could be picked up or dropped.  That split is
+** the signature of a draw rule with no matching hit rule -- the inventory grid
+** all over again -- except here it goes further, because even the highlight
+** was missing.
+**
+** All four consumers read ONE rect, from D2Common ordinal 10689, reached
+** through D2Client's import slot 6fb7fa50:
+**
+**   6fb1c510  the SLOT PICKER: for each slot, fetch its rect and compare the
+**             mouse against {left,right,top,bottom}; return the index.
+**             Reached from 6fb1c7e0, which is what the strip test calls once
+**             a click lands inside the quick slots.
+**   6fb1f160  the GREEN SQUARE: D2gfx#10028 fills rect.left..left+0x1d,
+**             rect.top..top+0x1d.  A rectangle FILL, not a sprite, so no draw
+**             hook of ours was ever going to see it.
+**   6fb1f18a  the ITEM ART: the shared item helper, at rect.left/rect.top.
+**   6fb1f2a3  the HOTKEY DIGITS: at rect.left+2, rect.bottom-2.
+**
+** Blizzard's own gate was already correct -- the strip test at 6fb1d13e reads
+** x in [W/2+23, W/2+145] off the live width -- which is why the click reached
+** the picker at all and then died there, on rects that are still 800x600.
+** Gate right, contents wrong: the mirror image of the inventory, where it was
+** the gate that got left behind.
+**
+** So hook the slot, call through, and shift the rect that comes back.  One
+** correction, applied where all four consumers read from, which is why they
+** cannot drift apart again.
+**
+** Scoped by inspection, not by hope: ordinal 10689 has six call sites in
+** D2Client and every one is belt code (6fb1c564, 6fb1c880, 6fb1c934,
+** 6fb1f0b2, 6fb1f13f, 6fb1f179).  Nothing else asks for these rects, so the
+** shift cannot reach the inventory, the stash or the cube.
+**
+** Y is carried too.  It is a no-op while the game runs at 600 lines, which is
+** every mode this was built for, but the belt is bottom-anchored and the rects
+** are raw 800x600, so H-600 is the correction if a taller mode appears.
+*/
+/*
+** ...and the GATE in front of it, which is a SECOND rect source.
+**
+** Shifting ord#10689 made the slots work and left one thing wrong: moving the
+** mouse across a slot turned the highlight on, off, on, off -- one flip per
+** mouse-move message.  Not a pixel-parity effect; a two-state machine.
+**
+** 6fb1d0c8, the belt's mouse-move handler, asks 6fbccfc4 "is the belt already
+** engaged?" and takes a DIFFERENT test depending on the answer:
+**
+**   not engaged -> 6fb1d13e, the strip test, x in [W/2+23, W/2+145] read off
+**                  the live width.  Correct already.  A hit ENGAGES the belt
+**                  (6fbccfc4 = 1) and the highlight comes on.
+**   engaged     -> 6fb1c3d0, whose first arm tests the rect ARRAY from
+**                  D2Common ord#10370.  Those rects are raw 800x600, so it
+**                  missed -- and a miss DISENGAGES (6fb1d125 clears 6fbccfc4
+**                  and 6fbccfc0), turning the highlight off.
+**
+** So every move alternated between the two arms and the belt flickered at the
+** rate the mouse produced messages.  Section 9, again: patch every arm.  The
+** first version of this hook did one of the two rect sources, which is why the
+** symptom moved instead of going away.
+**
+** The array starts at buffer+8, sixteen bytes per rect, the same
+** {left,right,top,bottom} order as ord#10689, with the count as a BYTE at
+** buffer+4.  The stack block the game hands over is 0x108 bytes, which is
+** exactly 8 + 16*16, so sixteen is the real capacity and the clamp is not a
+** guess.  Only 6fb1c3d0 reads these rects; the other three callers of
+** ord#10370 take the count and nothing else, so the shift cannot reach them.
+*/
+#define D2_BELT_RECT_SLOT 0x6fb7fa50u   /* D2Client IAT: D2Common ord#10689 */
+#define D2_BELT_LIST_SLOT 0x6fb7fa38u   /* D2Client IAT: D2Common ord#10370 */
+#define D2_BELT_RECTS_MAX 16u           /* (0x108 - 8) / 16                 */
+
+static unsigned int   g_beltReal     = 0;
+static unsigned char *g_beltStub     = 0;
+static unsigned int   g_beltListReal = 0;
+static unsigned char *g_beltListStub = 0;
+static int            g_beltCx       = 0;
+static int            g_beltBy       = 0;
+
+/*
+** Called by the list stub, after the real ordinal has filled the buffer.
+**
+** C rather than more hand-assembly, because it is a loop over a count only
+** known at run time.  The stub saves and restores eax around the call, so the
+** ordinal's own return value reaches its caller untouched.
+*/
+static void D2BeltFixList(unsigned char *buf)
+{
+    unsigned int n, i;
+    int *r;
+
+    if (!buf) return;
+    n = (unsigned int)buf[4];
+    if (n > D2_BELT_RECTS_MAX) n = D2_BELT_RECTS_MAX;
+
+    r = (int *)(buf + 8);
+    for (i = 0; i < n; i++) {
+        r[0] += g_beltCx;   /* left   */
+        r[1] += g_beltCx;   /* right  */
+        r[2] += g_beltBy;   /* top    */
+        r[3] += g_beltBy;   /* bottom */
+        r += 4;
+    }
+}
+
+/*
+** The gate's rect array: call through, then shift every rect it filled in.
+**
+**     push ebp / mov ebp,esp
+**     mov  edx,[ebp+8] ; mov ecx,[ebp+0xc]    the caller's registers, as they
+**                                             were at the original call
+**     push [ebp+0x10] .. [ebp+8]              three arguments, buffer last
+**     call [g_beltListReal]                   callee pops its own 12
+**     push eax                                keep the ordinal's result
+**     push [ebp+0x10] ; call D2BeltFixList    shift the rects (cdecl)
+**     add  esp,4 / pop eax
+**     pop  ebp / ret 0x0c
+*/
+static void Diablo2InstallBeltList(unsigned int cx, unsigned int by)
+{
+    static const unsigned char tmpl[] = {
+        0x55,                         /* push ebp                      */
+        0x8b, 0xec,                   /* mov  ebp,esp                  */
+        0x8b, 0x55, 0x08,             /* mov  edx,[ebp+8]              */
+        0x8b, 0x4d, 0x0c,             /* mov  ecx,[ebp+0xc]            */
+        0xff, 0x75, 0x10,             /* push [ebp+0x10]  ; buffer     */
+        0xff, 0x75, 0x0c,             /* push [ebp+0xc]                */
+        0xff, 0x75, 0x08,             /* push [ebp+8]                  */
+        0xff, 0x15, 0, 0, 0, 0,       /* call [g_beltListReal]         */
+        0x50,                         /* push eax         ; keep it    */
+        0xff, 0x75, 0x10,             /* push [ebp+0x10]  ; buffer     */
+        0xb8, 0, 0, 0, 0,             /* mov  eax,D2BeltFixList        */
+        0xff, 0xd0,                   /* call eax                      */
+        0x83, 0xc4, 0x04,             /* add  esp,4       ; cdecl      */
+        0x58,                         /* pop  eax                      */
+        0x5d,                         /* pop  ebp                      */
+        0xc2, 0x0c, 0x00              /* ret  0x0c                     */
+    };
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned int   slotVal = 0;
+    unsigned char *stub;
+
+    if (!cli || g_beltListStub) return;
+
+    if (!ReadModuleGlobal(cli, D2_BELT_LIST_SLOT, &slotVal) || !slotVal) {
+        GameFix_Log("belt: gate slot %08lx unreadable, gate not hooked"
+                    " -- expect the highlight to flicker as the mouse moves",
+                    (unsigned long)D2_BELT_LIST_SLOT);
+        g_beltListStub = (unsigned char *)1;
+        return;
+    }
+
+    stub = (unsigned char *)VirtualAlloc(NULL, sizeof(tmpl),
+                                         MEM_COMMIT | MEM_RESERVE,
+                                         PAGE_EXECUTE_READWRITE);
+    if (!stub) { GameFix_Log("belt: no memory for the gate stub"); return; }
+
+    g_beltListReal = slotVal;
+    memcpy(stub, tmpl, sizeof(tmpl));
+    PutU32(stub + 20, (unsigned int)&g_beltListReal);
+    PutU32(stub + 29, (unsigned int)&D2BeltFixList);
+
+    if (!WriteModuleGlobal(cli, D2_BELT_LIST_SLOT, (unsigned int)stub)) {
+        GameFix_Log("belt: could not write the gate slot");
+        VirtualFree(stub, 0, MEM_RELEASE);
+        return;
+    }
+
+    g_beltListStub = stub;
+    GameFix_Log("belt: gate rects hooked  real=%08lx stub=%08lx"
+                " (x += %u, y += %u, up to %u rects)",
+                (unsigned long)slotVal, (unsigned long)(unsigned int)stub,
+                cx, by, D2_BELT_RECTS_MAX);
+}
+
+static void Diablo2InstallBeltHook(void)
+{
+    /*
+    ** stdcall, four arguments, an out-pointer at +0x0c:
+    **
+    **     push ebp / mov ebp,esp
+    **     mov  edx,[ebp+8] ; mov ecx,[ebp+0xc]   reproduce the caller's
+    **                                            registers, so the shape of
+    **                                            the convention cannot matter
+    **     push [ebp+0x14] .. [ebp+8]             hand the four along
+    **     call [g_beltReal]                      callee pops its own 16
+    **     mov  ecx,[ebp+0x10]                    &rect (eax is the result and
+    **                                            is left alone)
+    **     add  [ecx+0],cx / [ecx+4],cx           left, right
+    **     add  [ecx+8],by / [ecx+0xc],by         top, bottom
+    **     pop  ebp / ret 0x10
+    */
+    static const unsigned char tmpl[] = {
+        0x55,                         /* push ebp                     */
+        0x8b, 0xec,                   /* mov  ebp,esp                 */
+        0x8b, 0x55, 0x08,             /* mov  edx,[ebp+8]             */
+        0x8b, 0x4d, 0x0c,             /* mov  ecx,[ebp+0xc]           */
+        0xff, 0x75, 0x14,             /* push [ebp+0x14]  ; slot      */
+        0xff, 0x75, 0x10,             /* push [ebp+0x10]  ; &rect     */
+        0xff, 0x75, 0x0c,             /* push [ebp+0xc]               */
+        0xff, 0x75, 0x08,             /* push [ebp+8]                 */
+        0xff, 0x15, 0, 0, 0, 0,       /* call [g_beltReal]            */
+        0x8b, 0x4d, 0x10,             /* mov  ecx,[ebp+0x10]          */
+        0x81, 0x01, 0, 0, 0, 0,       /* add  [ecx],cx      ; left    */
+        0x81, 0x41, 0x04, 0, 0, 0, 0, /* add  [ecx+4],cx    ; right   */
+        0x81, 0x41, 0x08, 0, 0, 0, 0, /* add  [ecx+8],by    ; top     */
+        0x81, 0x41, 0x0c, 0, 0, 0, 0, /* add  [ecx+0xc],by  ; bottom  */
+        0x5d,                         /* pop  ebp                     */
+        0xc2, 0x10, 0x00              /* ret  0x10                    */
+    };
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned int   slotVal = 0;
+    unsigned int   cx, by;
+    unsigned char *stub;
+
+    if (!cli || g_beltStub || !g_d2Belt || g_targetW <= 800u) return;
+
+    if (!ReadModuleGlobal(cli, D2_BELT_RECT_SLOT, &slotVal) || !slotVal) {
+        GameFix_Log("belt: import slot %08lx unreadable, not hooked",
+                    (unsigned long)D2_BELT_RECT_SLOT);
+        g_beltStub = (unsigned char *)1;   /* reported once, not every frame */
+        return;
+    }
+
+    stub = (unsigned char *)VirtualAlloc(NULL, sizeof(tmpl),
+                                         MEM_COMMIT | MEM_RESERVE,
+                                         PAGE_EXECUTE_READWRITE);
+    if (!stub) { GameFix_Log("belt: no memory for the stub"); return; }
+
+    cx = (g_targetW - 800u) / 2u;
+    by = (g_targetH > 600u) ? (g_targetH - 600u) : 0u;
+    g_beltCx = (int)cx;          /* the list helper reads these */
+    g_beltBy = (int)by;
+
+    g_beltReal = slotVal;
+    memcpy(stub, tmpl, sizeof(tmpl));
+    PutU32(stub + 23, (unsigned int)&g_beltReal);
+    PutU32(stub + 32, cx);
+    PutU32(stub + 39, cx);
+    PutU32(stub + 46, by);
+    PutU32(stub + 53, by);
+
+    if (!WriteModuleGlobal(cli, D2_BELT_RECT_SLOT, (unsigned int)stub)) {
+        GameFix_Log("belt: could not write the import slot");
+        VirtualFree(stub, 0, MEM_RELEASE);
+        return;
+    }
+
+    g_beltStub = stub;
+    GameFix_Log("belt: slot rects hooked  real=%08lx stub=%08lx"
+                " (x += %u, y += %u)",
+                (unsigned long)slotVal, (unsigned long)(unsigned int)stub,
+                cx, by);
+
+    Diablo2InstallBeltList(cx, by);
+}
+
 static void Diablo2FixupInvGrid(void)
 {
     HMODULE      cli = GetModuleHandleA("D2Client.dll");
@@ -2915,6 +3189,7 @@ static void Diablo2ReadIni(const char *ini)
     g_d2Trace  = (int)GetPrivateProfileIntA("Diablo2", "traceui", 0, ini);
     g_d2Menu   = (int)GetPrivateProfileIntA("Diablo2", "menu",    1, ini);
     g_d2InvGrid = (int)GetPrivateProfileIntA("Diablo2", "invgrid", 1, ini);
+    g_d2Belt    = (int)GetPrivateProfileIntA("Diablo2", "belt",    1, ini);
     {
         char w[48];
         w[0] = 0;
@@ -3253,6 +3528,7 @@ void GameFix_Tick(void)
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupInvGrid();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupEquipSlots();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupHitRegions();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2InstallBeltHook();
 
     /* Re-arm the trace, so a panel opened later than the first second still
        shows up.  Cheap: a clear over the sites actually seen. */
