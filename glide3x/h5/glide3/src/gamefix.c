@@ -448,26 +448,24 @@ static int          g_inSwap   = 0;
 static void GameFix_LogFlush(void);
 
 /*
-** Enabled by [GameFix] log=1 in wideDriver.ini beside the exe, or by the
-** FX_GLIDE_GAMEFIX_LOG environment variable.  Decided once and cached: this is
-** called from per-frame paths.
+** Enabled by [GameFix] log=1 in wideDriver.ini beside the exe.  Decided once
+** and cached: this is called from per-frame paths.
+**
+** One switch, deliberately.  There used to be a second, the environment
+** variable FX_GLIDE_GAMEFIX_LOG, and a second switch is a second thing to
+** remember to turn off: with no ini present at all the log is silent, but an
+** environment variable set once in a shell or a shortcut keeps writing
+** g3fix.txt with nothing on disk to explain why.  Removed so that "no ini, no
+** log" is the whole rule.
 */
 static int GameFix_LogEnabled(void)
 {
     char ini[MAX_PATH];
-    char env[32];
 
     if (g_logOn >= 0) return g_logOn;
 
-    g_logOn = 0;
-
-    if (GetEnvironmentVariableA("FX_GLIDE_GAMEFIX_LOG", env, sizeof(env)) != 0 &&
-        env[0] != '0')
-        g_logOn = 1;
-
-    if (!g_logOn && PathBesideExe(GAMEFIX_INI, ini) &&
-        GetPrivateProfileIntA("GameFix", "log", 0, ini) != 0)
-        g_logOn = 1;
+    g_logOn = (PathBesideExe(GAMEFIX_INI, ini) &&
+               GetPrivateProfileIntA("GameFix", "log", 0, ini) != 0) ? 1 : 0;
 
     return g_logOn;
 }
@@ -1669,11 +1667,122 @@ static const D2Fix2D g_d2Fix2D[] = {
     ** At 1432 that is 632 against cx's 316 -- getting this wrong leaves
     ** the frame exactly half way to where it belongs.
     */
-    { D2_TAG_CLIENT, 0x06d215u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 400,63 */
-    { D2_TAG_CLIENT, 0x06d237u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 544,253 */
-    { D2_TAG_CLIENT, 0x06d259u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 713,484 */
-    { D2_TAG_CLIENT, 0x06d27bu, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 544,553 */
-    { D2_TAG_CLIENT, 0x06d29du, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "panel frame" },   /* 400,553 */
+    /*
+    ** The side-panel BACKGROUNDS -- both of them, and the first rules in this
+    ** table that move Y.
+    **
+    ** One function draws both panels, as five sprites each, at contiguous
+    ** RVAs: the right-hand set below and the left-hand set after it.  At 600
+    ** only the right one needed anything, because the left panel is anchored
+    ** at x=0 and was already correct.
+    **
+    ** ADJ_Y_BOTTOM is new here and is what fixes the "background and
+    ** foreground separate" at a height above 600.  Diablo II bottom-anchors
+    ** the panel CONTENTS but leaves these backgrounds at stock y, and at 600
+    ** those agree, so the whole vertical axis of this table has been a no-op
+    ** for every fix until now (by = H-600 = 0).  Measured on the character
+    ** screen at 2560x1080: frame at stock y 1..552, contents at 491..971,
+    ** which is stock 11..491 plus exactly by=480.
+    **
+    ** The contents are the ones that are RIGHT.  At 600 the frame's bottom is
+    ** 552 = 600-48, sitting exactly on the control panel; +by puts it at
+    ** H-48 again, which is the same relationship at any height.  So the
+    ** background moves and the contents are left alone.
+    */
+    { D2_TAG_CLIENT, 0x06d215u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_BOTTOM, "panel frame R" }, /* 400,63 */
+    { D2_TAG_CLIENT, 0x06d237u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_BOTTOM, "panel frame R" }, /* 544,253 */
+    { D2_TAG_CLIENT, 0x06d259u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_BOTTOM, "panel frame R" }, /* 713,484 */
+    { D2_TAG_CLIENT, 0x06d27bu, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_BOTTOM, "panel frame R" }, /* 544,553 */
+    { D2_TAG_CLIENT, 0x06d29du, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_BOTTOM, "panel frame R" }, /* 400,553 */
+    /*
+    ** The LEFT panel's five, x untouched: it is anchored at x=0 and stays
+    ** there at any width, which is why these have never needed a row before.
+    */
+    { D2_TAG_CLIENT, 0x06d31cu, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "panel frame L" }, /* 256,63 */
+    { D2_TAG_CLIENT, 0x06d2feu, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "panel frame L" }, /* 0,253 */
+    { D2_TAG_CLIENT, 0x06d339u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "panel frame L" }, /* 0,484 */
+    { D2_TAG_CLIENT, 0x06d356u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "panel frame L" }, /* 0,553 */
+    { D2_TAG_CLIENT, 0x06d377u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "panel frame L" }, /* 256,553 */
+    /*
+    ** The QUEST LOG's contents.
+    **
+    ** The panel backgrounds above are shared by every side panel, but what
+    ** goes inside them is not, and the panels do not agree about their own
+    ** anchoring.  The character screen's contents were already bottom-
+    ** anchored by the game, so moving its background was the whole fix.  The
+    ** quest log's are not: its six icons arrive at stock y 181..283 while its
+    ** frame now follows the screen, which left the icons stranded at the top.
+    **
+    ** X is untouched -- the quest log is anchored at x=0 and its contents come
+    ** in at 102..300, already where they belong at any width.
+    **
+    ** Only the icons.  A third rule was here for +08da8b, the ACT TAB, and it
+    ** was wrong: that draw arrives at y=573, which is its stock 93 plus the
+    ** game's own 480, so it was already bottom-anchored and the rule shifted
+    ** it a second time, off the bottom of the panel.
+    **
+    ** The mistake was the test used to sort the draws: "incoming y < 600 means
+    ** stock".  It does not.  An element whose stock y is small is still under
+    ** 600 after the game has bottom-anchored it -- 93 + 480 = 573 -- so the
+    ** rule caught something that was already right.  What actually separates
+    ** them is whether the value equals its own stock position, and the only
+    ** way to know that is the unpatched layout: the tab sits at the TOP of the
+    ** quest log at 800x600, so 573 could never have been its stock y.
+    */
+    { D2_TAG_CLIENT, 0x08dde5u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest icons"  },
+    { D2_TAG_CLIENT, 0x08de5du, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest icons 2" },
+    /* The quest TITLE and DESCRIPTION, left behind by the icons.  Both are
+       D2Win text draws and both arrive at y 308 and 330..350 with by=480, so
+       both are provably stock. */
+    { D2_TAG_CLIENT, 0x08dfa7u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest title" },
+    { D2_TAG_CLIENT, 0x08e00au, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest text"  },
+    /* The rolling SPEECH text, from the button on the quest panel.  Shares the
+       description's x=96 and arrives at y 432, well under by. */
+    { D2_TAG_CLIENT, 0x074aa5u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest speech" },
+    /*
+    ** The WAYPOINT panel's act tab and its "no other waypoints" line.
+    **
+    ** Its inner tiles (+03fd54..+03fded) and its scroll box (+03fff3, +040215)
+    ** already arrive bottom-anchored, so the panel itself is fine; these two
+    ** sit above it instead of inside it.
+    **
+    ** Note the quest log does the OPPOSITE with its own act tab: +08da8b comes
+    ** in already anchored and must be left alone -- a rule on it was the bug
+    ** that pushed the tab off the bottom.  The two panels are written by
+    ** different code and neither can be assumed from the other.
+    **
+    ** Both of these arrive at y=94 and y=108 with by=120, and a value below by
+    ** cannot be stock+by, so they are provably stock and safe to move.  The
+    ** rest of the panel's draws are ambiguous by that test and are left alone
+    ** until something is actually seen to be wrong.
+    */
+    { D2_TAG_CLIENT, 0x03ff72u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint tab"  },
+    { D2_TAG_CLIENT, 0x0402a0u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint note" },
+    /*
+    ** The rest of the waypoint panel: its list and its close button.
+    **
+    ** These were ambiguous at 1680x720 -- with by=120 a value like 149 could
+    ** have been stock 29 already anchored -- so they were left alone.  At
+    ** 2560x1080 by is 480 and the same draws still arrive at 149, 144..249 and
+    ** 477, all below by, which cannot be stock+by.  Provably stock, so they
+    ** move.
+    **
+    ** Testing at a TALLER mode is what settled it: the larger by is, the more
+    ** of the ambiguous band it resolves.
+    */
+    { D2_TAG_CLIENT, 0x0400f0u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint list bg" },
+    { D2_TAG_CLIENT, 0x040158u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint list"    },
+    { D2_TAG_CLIENT, 0x03fff3u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint close"   },
+    /*
+    ** The close button's CANCEL tooltip, x=347 beside the button at 353.
+    **
+    ** Read as "already anchored" the first time round and left out, because at
+    ** 1680x720 its y of 445 could have been stock 325 plus by=120.  At
+    ** 2560x1080 it still arrives at 445, well under by=480, so it was stock all
+    ** along.  The ambiguous band shrinks as by grows -- which is the argument
+    ** for diagnosing this class of bug at the tallest mode available.
+    */
+    { D2_TAG_CLIENT, 0x040215u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint cancel tip" },
 
     { D2_TAG_CLIENT, 0x09e0e2u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 535,217 */
     { D2_TAG_CLIENT, 0x09e127u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 536,263 */
@@ -1833,8 +1942,18 @@ static unsigned int  g_traceEvery = 0;   /* frames between budget re-arms */
 **
 ** [Diablo2] watchbox=x0,y0,x1,y1   (empty or 0,0,0,0 = off)
 */
-#define D2_BOX_MAX     400u
-#define D2_BOX_PERSITE 4u     /* per call site, so one busy site cannot own it */
+#define D2_BOX_MAX     600u
+/*
+** Per call site, so one busy site cannot own the budget.
+**
+** Raised from 4 to 32.  Four is right for a CENSUS -- "which call sites draw
+** here" -- but useless for the opposite question, "what range of positions
+** does ONE site use".  The quest log's scrolling speech draws two lines from
+** +074aa5 and the box logged the same y four times, so whether the other line
+** comes from a different y was invisible.  Keep the RECTANGLE tight and let a
+** site report properly; that is the trade that answers per-site questions.
+*/
+#define D2_BOX_PERSITE 32u
 static int          g_box[4] = { 0, 0, 0, 0 };
 static int          g_boxOn  = 0;
 static unsigned int g_boxHits = 0;
@@ -2047,18 +2166,34 @@ static void __cdecl D2Dispatch(unsigned int tag, unsigned int ra,
     */
     /*
     ** The watch box first, and outside the budget: the whole point is to see
-    ** draws the budget is hiding.  Reports the INCOMING position, since that
-    ** is what a rule would have to match on.
+    ** draws the budget is hiding.
+    **
+    ** Reports the incoming position AND the outgoing one.  Incoming is what a
+    ** rule has to match on, but incoming alone cannot tell "the rule fired and
+    ** moved it" from "the rule fired and the edit did not reach the game" --
+    ** and that is exactly the state the quest log's scrolling speech is in: the
+    ** box says `(96,427) -> already fixed`, and the text still renders at 427.
+    ** Section 6 of GAME-PATCHING.md, which this file has quoted at itself
+    ** before: log what the FIX did, not what the game asked.
     */
     if (g_boxOn && g_boxHits < D2_BOX_MAX && px && py &&
+        !g_d2FrontEnd &&           /* the FRONT END, for the same reason as the
+                                    * rain below.  Raising the per-site cap to
+                                    * 32 let nine menu sites take 288 of the
+                                    * 400 records before the game had even
+                                    * loaded, and the in-game draw being hunted
+                                    * never got logged at all.  Nothing in the
+                                    * menu is ever the subject of an in-game
+                                    * hunt, so it is excluded outright. */
         rva != 0x04afafu &&        /* the rain: hundreds of lines a frame, and
                                     * it once ate 222 of a 400-record budget */
         x0 >= g_box[0] && x0 <= g_box[2] &&
         y0 >= g_box[1] && y0 <= g_box[3] &&
         BoxAllow(tag, rva)) {
         g_boxHits++;
-        GameFix_Log("WATCH %-14s +%06x  (%d,%d)%s%s", h->label, rva, x0, y0,
-                    applied ? " -> already fixed: " : "", applied ? what : "");
+        GameFix_Log("WATCH %-14s +%06x  (%d,%d) -> (%d,%d)%s%s",
+                    h->label, rva, x0, y0, *px, *py,
+                    applied ? "  fixed: " : "", applied ? what : "");
     }
 
     if (g_d2Trace && TraceAllow(tag, rva)) {
@@ -2266,27 +2401,75 @@ static void Diablo2InstallDrawHook(void)
 #define D2_EQUIP_STRIDE 0x14u
 #define D2_EQUIP_N      10u
 
+/*
+** Shift one descriptor PAIR, once, whatever the width happens to be.
+**
+** The guard used to be a band -- "only if x is still under 800" -- on the
+** assumption that one shift always carries the value out of the stock range.
+** At 1400 wide it does: 419 + 600 = 1019.  At 960 wide the shift is only 160,
+** so 419 -> 579 -> 739 -> 899 and the fixup, which runs every 30 frames, kept
+** moving the grid until it happened to clear 800.  On screen the inventory
+** items started left of their slots, snapped into place, then slid out to the
+** right: three passes, exactly as the log recorded them.
+**
+** So remember what was WRITTEN instead of guessing from the value.  A field
+** holding the value we last wrote is already ours and is left alone; anything
+** else is a fresh fill by the game and gets shifted.  That is idempotent for
+** any width, and still tracks the descriptors being repopulated.
+**
+** Both halves move or neither does.  A half-moved box gives "x >= 1051 &&
+** x <= 709", which nothing satisfies, and the panel stops responding entirely
+** -- this file has paid for that lesson once already.
+*/
+static int ShiftPair(HMODULE mod, unsigned int vaA, unsigned int vaB,
+                     unsigned int delta, unsigned int *lastA, unsigned int *lastB,
+                     unsigned int *fromA, unsigned int *fromB)
+{
+    unsigned int a = 0, b = 0;
+
+    if (!delta) return 0;                       /* 600 lines: nothing to do */
+    if (!ReadModuleGlobal(mod, vaA, &a)) return 0;
+    if (!ReadModuleGlobal(mod, vaB, &b)) return 0;
+    if (a == 0u || b <= a || (b - a) > 1024u) return 0;   /* empty or junk */
+    if (a == *lastA && b == *lastB) return 0;            /* already ours */
+
+    *fromA = a; *fromB = b;
+    if (!WriteModuleGlobal(mod, vaA, a + delta)) return 0;
+    if (!WriteModuleGlobal(mod, vaB, b + delta)) {
+        WriteModuleGlobal(mod, vaA, a);         /* never leave it half moved */
+        return 0;
+    }
+    *lastA = a + delta;
+    *lastB = b + delta;
+    return 1;
+}
+
 static void Diablo2FixupEquipSlots(void)
 {
     HMODULE      cli = GetModuleHandleA("D2Client.dll");
-    unsigned int i, a, x, moved = 0;
+    unsigned int i, base, a, b, moved = 0;
+    unsigned int d  = g_targetW - 800u;
+    unsigned int dy = (g_targetH > 600u) ? (g_targetH - 600u) : 0u;
+    static unsigned int last[D2_EQUIP_N][4];
 
     if (!cli || !g_d2InvGrid || g_targetW <= 800u) return;
-    for (i = 0; i < D2_EQUIP_N; i++) {
-        unsigned int r = 0, d = g_targetW - 800u;
-        a = D2_EQUIP_BASE + i * D2_EQUIP_STRIDE + 0x04u;
-        if (!ReadModuleGlobal(cli, a, &x)) continue;
-        if (x < 400u || x >= 800u) continue;         /* empty, moved, or not ours */
-        if (!ReadModuleGlobal(cli, a + 0x04u, &r)) continue;
 
-        /* Left AND right: these rects are hit-tested the same way the
-           inventory grid is, so a half-moved box rejects every position. */
-        if (WriteModuleGlobal(cli, a, x + d) &&
-            WriteModuleGlobal(cli, a + 0x04u, r + d)) {
-            GameFix_Log("  equip slot %u: x %u..%u -> %u..%u", i, x, r,
-                        x + d, r + d);
+    for (i = 0; i < D2_EQUIP_N; i++) {
+        base = D2_EQUIP_BASE + i * D2_EQUIP_STRIDE;
+
+        if (ShiftPair(cli, base + 0x04u, base + 0x08u, d,
+                      &last[i][0], &last[i][1], &a, &b)) {
+            GameFix_Log("  equip slot %u: x %u..%u -> %u..%u", i, a, b,
+                        a + d, b + d);
             moved++;
         }
+        /* Y as well above 600 lines: the panel these sit in is bottom
+           anchored and they are not, which left the equipped items at the top
+           of the screen while their panel moved down. */
+        if (ShiftPair(cli, base + 0x0cu, base + 0x10u, dy,
+                      &last[i][2], &last[i][3], &a, &b))
+            GameFix_Log("  equip slot %u: y %u..%u -> %u..%u", i, a, b,
+                        a + dy, b + dy);
     }
     if (moved) GameFix_Log("equipslots: moved %u of %u", moved, D2_EQUIP_N);
 }
@@ -2340,6 +2523,17 @@ static void Diablo2FixupEquipSlots(void)
 
 #define D2_INV_LEFT   (D2_INV_GRID + 0x04u)
 #define D2_INV_RIGHT  (D2_INV_GRID + 0x08u)
+/*
+** The same descriptors carry Y, at +0c and +10, and it matters above 600.
+**
+** Only the two X fields were ever written, because at 600 lines the vertical
+** correction is zero and nothing could show.  The gate's Y pair lives at
+** 6fbb1610/6fbb1614, the two compares that follow the X ones at 6fb40660.
+*/
+#define D2_INV_TOP     (D2_INV_GRID + 0x0cu)
+#define D2_INV_BOT     (D2_INV_GRID + 0x10u)
+#define D2_INV_PANEL_T 0x6fbb1610u
+#define D2_INV_PANEL_B 0x6fbb1614u
 
 /*
 ** Move a hardcoded HOVER REGION.
@@ -2743,123 +2937,6 @@ static void Diablo2FixupHitRegions(void)
     Diablo2FixupRegionsInPlace(cx);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Cinematics: measuring the video quad before touching it                    */
-/* ------------------------------------------------------------------------ */
-/*
-** Diablo II's cinematics reach the screen through THIS driver, which is the
-** whole reason they can be resized at all.
-**
-** D2Glide decodes each frame into a buffer of its own -- Smacker through
-** SmackToBuffer, Bink through BinkCopyToBuffer, both resolved inside D2Glide
-** -- uploads it with grTexDownloadMipMap, and draws it as textured quads:
-**
-**   6f856640   the frame draw, called with the video's width in eax and its
-**              height on the stack (6f8569d7 passes the Smacker header's
-**              own [esi+4] and [esi+8])
-**   6f856841   grDrawVertexArrayContiguous(GR_TRIANGLE_FAN, 4, verts, 28)
-**   6f85693b   the same again for the next horizontal tile
-**
-** and the vertex array is a STATIC buffer at 6f867a80, rebuilt every frame.
-** That address is the identifier: no return-address walk, no back-trace, no
-** code patch in D2Glide.  A pointer compare in grDrawVertexArrayContiguous
-** says "this draw is the movie" with certainty, and the fast path when it is
-** not is a single test.
-**
-** Scaling is then a transform on four vertices.  The video is already CENTRED,
-** so a pure scale about the screen centre keeps it centred:
-**
-**     x' = W/2 + (x - W/2) * s        y' = H/2 + (y - H/2) * s
-**
-** and s is the same for every tile, so the tiles stay joined.
-**
-** What is NOT yet known for certain is the geometry the game hands over: the
-** decode buffer is set up with a pitch of 0x200 and the draw splits into 256
-** wide tiles, which does not obviously fit a 640-wide movie, so the tile count
-** and the real frame size are worth measuring rather than deriving.  Section 6
-** of GAME-PATCHING.md: measure, then patch.  This logs the quads exactly as
-** they arrive; the transform goes in once the numbers are in.
-**
-** [Diablo2] videolog=1
-*/
-#define D2_VID_VERTS 0x6f867a80u   /* D2Glide's static video vertex array */
-#define D2_VID_LOG   8u            /* draws to record, then stop          */
-
-static int          g_vidLog   = 0;   /* from the ini                     */
-static void        *g_vidVerts = 0;   /* resolved once D2Glide is mapped  */
-static int          g_vidOn    = 0;   /* both of the above are ready      */
-static unsigned int g_vidSeen  = 0;
-
-/* Resolve the vertex array's live address.  Cheap and idempotent; called from
-   the tick, never from the draw path. */
-static void Diablo2ResolveVideo(void)
-{
-    HMODULE                 gl;
-    const IMAGE_DOS_HEADER *dos;
-    const IMAGE_NT_HEADERS *nt;
-    unsigned int            rva;
-
-    if (g_vidOn || !g_vidLog) return;
-    gl = GetModuleHandleA("D2Glide.dll");
-    if (!gl) return;
-
-    dos = (const IMAGE_DOS_HEADER *)gl;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
-    nt = (const IMAGE_NT_HEADERS *)((const unsigned char *)gl + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
-    if (D2_VID_VERTS < (unsigned int)nt->OptionalHeader.ImageBase) return;
-
-    rva = D2_VID_VERTS - (unsigned int)nt->OptionalHeader.ImageBase;
-    if (rva >= (unsigned int)nt->OptionalHeader.SizeOfImage) return;
-
-    g_vidVerts = (void *)((unsigned char *)gl + rva);
-    g_vidOn    = 1;
-    GameFix_Log("video: watching D2Glide's vertex array at %08lx"
-                " (preferred %08lx, module %08lx)",
-                (unsigned long)(unsigned int)g_vidVerts,
-                (unsigned long)D2_VID_VERTS, (unsigned long)(unsigned int)gl);
-}
-
-/*
-** wvsprintf has no floats, so print hundredths by hand.  Values here are
-** screen and texel coordinates -- small, and never NaN -- so a cast is enough.
-*/
-static void VidFmt(char *out, float v)
-{
-    long whole = (long)v;
-    long frac  = (long)((v - (float)whole) * 100.0f);
-
-    if (frac < 0) frac = -frac;
-    wsprintfA(out, "%ld.%02ld", whole, frac);
-}
-
-void GameFix_VertexArray(unsigned int mode, unsigned int count,
-                         void *pointers, unsigned int stride)
-{
-    const float *v;
-    unsigned int i;
-
-    /* The whole cost when this is not the movie, or not enabled at all. */
-    if (!g_vidOn || pointers != g_vidVerts) return;
-    if (g_vidSeen >= D2_VID_LOG) return;
-    g_vidSeen++;
-
-    GameFix_Log("video draw %u: mode=%u count=%u stride=%u  screen %ux%u",
-                g_vidSeen, mode, count, stride, g_targetW, g_targetH);
-
-    if (stride != 28u || count > 8u) return;
-
-    v = (const float *)pointers;
-    for (i = 0; i < count; i++) {
-        char a[24], b[24], c[24], d[24], e[24], f[24], g[24];
-
-        VidFmt(a, v[0]); VidFmt(b, v[1]); VidFmt(c, v[2]); VidFmt(d, v[3]);
-        VidFmt(e, v[4]); VidFmt(f, v[5]); VidFmt(g, v[6]);
-        GameFix_Log("   v%u  %-9s %-9s %-9s %-9s %-9s %-9s %s",
-                    i, a, b, c, d, e, f, g);
-        v += 7;                                  /* stride 28 / sizeof(float) */
-    }
-}
 /*
 ** Move the BELT slot rects, at their source.
 **
@@ -3121,43 +3198,232 @@ static void Diablo2InstallBeltHook(void)
     Diablo2InstallBeltList(cx, by);
 }
 
+/*
+** Y BOUNDS that never learned about the screen height.
+**
+** The quest log's buttons draw themselves against the LIVE height and then
+** hit-test themselves against CONSTANTS:
+**
+**   6fb3e086  mov eax,ds:0x6fba7038          ; H
+**   6fb3e096  lea edx,[ecx+eax*1-0x3a]       ; art y = C + H - 58
+**   6fb3e0ab  call DrawImage
+**   6fb3e0bc  mov edx,ds:0x6fbcc94c          ; mouse y
+**   6fb3e0cf  lea edi,[edx+eax*1]            ; test y = mouseY + C
+**   6fb3e0dc  cmp edi,0x188  jl reject       ; ...against 392 and 425,
+**   6fb3e0e4  cmp edi,0x1a9  jg reject       ;    with no H anywhere
+**
+** so above 600 lines the button is drawn where it belongs and can only be
+** clicked where it used to be.  That is why the quest log could be opened and
+** not closed.
+**
+** The art moves by (H-58) - (600-58) = H-600 = by, whatever C holds, and the
+** bounds move by nothing.  So adding by to the bounds restores agreement at
+** any height, and the value of C -- an unidentified global at 6fbcd358 --
+** never has to be worked out.
+**
+** A plain immediate rewrite: `cmp edi,imm32` is 81 ff id, and the new value
+** fits, so there is no stub and no relocation.  Guarded on the shipped
+** immediate still being there, which makes it idempotent for free: once
+** rewritten the bytes no longer match and a second pass does nothing.
+*/
+typedef struct {
+    unsigned int  rva;     /* the cmp instruction */
+    unsigned char modrm;   /* 0xff cmp edi / 0xf9 cmp ecx / 0x00 cmp eax */
+    unsigned int  stock;   /* the immediate as Blizzard shipped it */
+    const char   *what;
+} D2YBound;
+
+/*
+** cmp eax,imm32 has its own one-byte opcode, 3d id, five bytes rather than
+** the six of 81 /7 id.  modrm 0x00 in the table means that form.
+*/
+#define YB_EAX 0x00u
+
+/*
+** THREE copies of the same two bounds, and patching one is not enough.
+**
+** The first version fixed only the draw-and-hover function, which is why the
+** close button grew a tooltip and still would not close: the tooltip comes
+** from that function, and the CLICK comes from somewhere else entirely.
+** Searching D2Client for the shipped immediates found all of them:
+**
+**   +08e0dc  cmp edi  draw + hover      6fb3e0cf  lea edi,[edx+eax]
+**   +08b16e  cmp ecx  a predicate, "is the mouse over button A/B",
+**                     called from 6fb3c8b6 with ecx = the same y
+**   +08d6ea  cmp ecx  the CLICK handler -- 6fb3d6d6 add ecx,esi, then
+**                     call 6fb3d240 on a hit
+**
+** All three take y as mouseY plus the same panel offset and compare it to the
+** same constants, so all three move together.  Two register forms, hence the
+** modrm byte: 81 ff id for edi, 81 f9 id for ecx.
+**
+** Lesson worth keeping: a hit region can be implemented more than once in a
+** binary, and fixing the one the trace shows you leaves the others.  The
+** immediates themselves are the search key that finds the rest.
+*/
+static const D2YBound g_d2YBound[] = {
+    { 0x08e0dcu, 0xffu, 0x188u, "quest btn A top  (draw)"  },
+    { 0x08e0e4u, 0xffu, 0x1a9u, "quest btn A bot  (draw)"  },
+    { 0x08e182u, 0xffu, 0x186u, "quest btn B top  (draw)"  },
+    { 0x08e18au, 0xffu, 0x1a8u, "quest btn B bot  (draw)"  },
+    { 0x08b16eu, 0xf9u, 0x188u, "quest btn A top  (test)"  },
+    { 0x08b176u, 0xf9u, 0x1a9u, "quest btn A bot  (test)"  },
+    { 0x08b1feu, 0xf9u, 0x186u, "quest btn B top  (test)"  },
+    { 0x08b206u, 0xf9u, 0x1a8u, "quest btn B bot  (test)"  },
+    { 0x08d6eau, 0xf9u, 0x188u, "quest btn A top  (click)" },
+    { 0x08d6f2u, 0xf9u, 0x1a9u, "quest btn A bot  (click)" },
+    /*
+    ** The WAYPOINT panel's close button, and the same story a second time.
+    **
+    ** It draws at `mov ecx,0x1a1 ; sub ecx,[6fbcd358]` -- panel y 417, a
+    ** constant, so it does not follow the height and the draw rule above
+    ** moves it.  Its bounds are 387..420, which brackets that 417 exactly,
+    ** and they appear THREE times just as the quest log's did, in all three
+    ** register forms:
+    **
+    **   +03ecde  cmp ecx   81 f9 id
+    **   +03f2d3  cmp edi   81 ff id
+    **   +040192  cmp eax   3d id      <- five bytes, hence YB_EAX
+    **
+    ** Found by searching the region for immediates in the button's band
+    ** rather than by reading outward from the draw, which is the technique
+    ** that found the quest log's three and is now the standard move.
+    */
+    { 0x03ecdeu, 0xf9u,   0x183u, "wp close top (ecx)" },
+    { 0x03ece6u, 0xf9u,   0x1a4u, "wp close bot (ecx)" },
+    { 0x03f2d3u, 0xffu,   0x183u, "wp close top (edi)" },
+    { 0x03f2dbu, 0xffu,   0x1a4u, "wp close bot (edi)" },
+    { 0x040192u, YB_EAX,  0x183u, "wp close top (eax)" },
+    { 0x040199u, YB_EAX,  0x1a4u, "wp close bot (eax)" }
+};
+#define D2_YBOUND_N (sizeof(g_d2YBound) / sizeof(g_d2YBound[0]))
+
+static int g_yboundDone = 0;
+
+static void Diablo2FixupYBounds(void)
+{
+    HMODULE      cli = GetModuleHandleA("D2Client.dll");
+    unsigned int i, by, done = 0;
+
+    if (!cli || g_yboundDone || g_targetH <= 600u) return;
+    by = g_targetH - 600u;
+    g_yboundDone = 1;                    /* one attempt, reported either way */
+
+    for (i = 0; i < D2_YBOUND_N; i++) {
+        const D2YBound *y = &g_d2YBound[i];
+        unsigned char  *at = (unsigned char *)((unsigned int)cli + y->rva);
+        unsigned char   want[6], repl[6];
+        unsigned int    len, immAt;
+
+        if (y->modrm == YB_EAX) {                    /* cmp eax,imm32 */
+            want[0] = 0x3d; len = 5u; immAt = 1u;
+        } else {                                     /* cmp edi/ecx,imm32 */
+            want[0] = 0x81; want[1] = y->modrm; len = 6u; immAt = 2u;
+        }
+        PutU32(want + immAt, y->stock);
+        if (IsBadReadPtr(at, len) || memcmp(at, want, len) != 0) {
+            GameFix_Log("ybound: %s +%06lx -- not the shipped bytes, skipped",
+                        y->what, (unsigned long)y->rva);
+            continue;
+        }
+
+        memcpy(repl, want, len);
+        PutU32(repl + immAt, y->stock + by);
+        if (WriteCode(at, repl, len)) {
+            GameFix_Log("ybound: %s +%06lx  %u -> %u", y->what,
+                        (unsigned long)y->rva, y->stock, y->stock + by);
+            done++;
+        } else {
+            GameFix_Log("ybound: %s -- could not write the code", y->what);
+        }
+    }
+    if (done) GameFix_Log("ybound: moved %u of %u", done, (unsigned int)D2_YBOUND_N);
+}
+
+/*
+** The six QUEST ICONS' hit boxes.
+**
+** Their art is moved by the two draw rules above, and their hit test is a
+** static table -- 6fb9f180, sixteen bytes an entry, x at +0 and y at +4, box
+** 0x38 by 0x34 -- walked at 6fb3b1c1 with the count from 6fbd08b0:
+**
+**     mov ecx,0x6fb9f184
+**     mov edx,[ecx-4] ; cmp ebx,edx jl next ; add edx,0x38 ; cmp ebx,edx jge next
+**     mov edx,[ecx]   ; cmp edi,edx jl next ; add edx,0x34 ; cmp edi,edx jl HIT
+**
+** The coordinates are PANEL-RELATIVE and in the same space as the close
+** button's constants: the icons occupy y 65..215 and the button y 392..425,
+** both inside a panel that is 63..553 tall.  One space, so one correction --
+** the button's immediates get +by in Diablo2FixupYBounds and this column gets
+** the same.
+**
+** Guarded on the shipped y, which makes it idempotent: after the write the
+** value is no longer 65 or 163 and a second pass does nothing.  x is left
+** alone; the quest log is anchored at x=0 at any width.
+*/
+#define D2_QICON_BASE   0x6fb9f180u
+#define D2_QICON_STRIDE 0x10u
+#define D2_QICON_N      6u
+
+static int g_qiconDone = 0;
+
+static void Diablo2FixupQuestIcons(void)
+{
+    /* Rows of three, twice: the 3x2 grid the panel shows. */
+    static const unsigned int stockY[D2_QICON_N] = { 65u, 65u, 65u,
+                                                     163u, 163u, 163u };
+    HMODULE      cli = GetModuleHandleA("D2Client.dll");
+    unsigned int i, by, y, moved = 0;
+
+    if (!cli || g_qiconDone || g_targetH <= 600u) return;
+    by = g_targetH - 600u;
+
+    for (i = 0; i < D2_QICON_N; i++) {
+        unsigned int va = D2_QICON_BASE + i * D2_QICON_STRIDE + 0x04u;
+
+        if (!ReadModuleGlobal(cli, va, &y)) continue;
+        if (y != stockY[i]) continue;              /* already ours, or not it */
+        if (WriteModuleGlobal(cli, va, y + by)) {
+            GameFix_Log("  quest icon %u: y %u -> %u", i, y, y + by);
+            moved++;
+        }
+    }
+    if (moved == D2_QICON_N) g_qiconDone = 1;      /* only stop when all six */
+    if (moved) GameFix_Log("questicons: moved %u of %u", moved, D2_QICON_N);
+}
+
 static void Diablo2FixupInvGrid(void)
 {
     HMODULE      cli = GetModuleHandleA("D2Client.dll");
-    unsigned int x = 0;
-
-    unsigned int r = 0, d = g_targetW - 800u;
+    unsigned int a, b;
+    unsigned int d  = g_targetW - 800u;
+    unsigned int dy = (g_targetH > 600u) ? (g_targetH - 600u) : 0u;
+    static unsigned int last[8];   /* grid L,R,T,B then gate L,R,T,B */
 
     if (!cli || !g_d2InvGrid || g_targetW <= 800u) return;
-    if (!ReadModuleGlobal(cli, D2_INV_LEFT, &x)) return;
-    if (x == 0u || x >= 800u) return;      /* empty, or already moved */
-    if (!ReadModuleGlobal(cli, D2_INV_RIGHT, &r)) return;
 
     /*
-    ** BOTH edges, and that is the whole point.  The hit test is a plain
-    ** bounding-box compare:
-    **
-    **     cmp mouseX,[+04] jl reject ; cmp mouseX,[+08] jg reject
-    **     cmp mouseY,[+0c] jl reject ; cmp mouseY,[+10] jg reject
-    **
-    ** so moving the left edge alone leaves "x >= 1051 && x <= 709", which no
-    ** position satisfies -- the grid stops responding to the mouse entirely
-    ** rather than responding in the wrong place.  Vertical is untouched
-    ** because at 600 lines the layout is already stock.
+    ** The grid, then the GATE in front of it.  Moving the inner rects and not
+    ** the gate made the whole inventory dead: over the panel the gate
+    ** rejected, over the old position it passed but the rects had moved out
+    ** from under it.  A gate that fails closed hides every correction behind
+    ** it.
     */
-    if (WriteModuleGlobal(cli, D2_INV_LEFT,  x + d) &&
-        WriteModuleGlobal(cli, D2_INV_RIGHT, r + d))
-        GameFix_Log("invgrid: grid x %u..%u -> %u..%u", x, r, x + d, r + d);
+    if (ShiftPair(cli, D2_INV_LEFT, D2_INV_RIGHT, d,
+                  &last[0], &last[1], &a, &b))
+        GameFix_Log("invgrid: grid x %u..%u -> %u..%u", a, b, a + d, b + d);
 
-    /* And the gate in front of it, or none of the above is ever reached. */
-    if (ReadModuleGlobal(cli, D2_INV_PANEL_L, &x) &&
-        ReadModuleGlobal(cli, D2_INV_PANEL_R, &r) &&
-        x < 800u && r > x) {
-        if (WriteModuleGlobal(cli, D2_INV_PANEL_L, x + d) &&
-            WriteModuleGlobal(cli, D2_INV_PANEL_R, r + d))
-            GameFix_Log("invgrid: panel gate x %u..%u -> %u..%u",
-                        x, r, x + d, r + d);
-    }
+    if (ShiftPair(cli, D2_INV_TOP, D2_INV_BOT, dy,
+                  &last[2], &last[3], &a, &b))
+        GameFix_Log("invgrid: grid y %u..%u -> %u..%u", a, b, a + dy, b + dy);
+
+    if (ShiftPair(cli, D2_INV_PANEL_L, D2_INV_PANEL_R, d,
+                  &last[4], &last[5], &a, &b))
+        GameFix_Log("invgrid: panel gate x %u..%u -> %u..%u", a, b, a + d, b + d);
+
+    if (ShiftPair(cli, D2_INV_PANEL_T, D2_INV_PANEL_B, dy,
+                  &last[6], &last[7], &a, &b))
+        GameFix_Log("invgrid: panel gate y %u..%u -> %u..%u", a, b, a + dy, b + dy);
 }
 
 /*
@@ -3334,7 +3600,6 @@ static void Diablo2ReadIni(const char *ini)
     g_d2Menu   = (int)GetPrivateProfileIntA("Diablo2", "menu",    1, ini);
     g_d2InvGrid = (int)GetPrivateProfileIntA("Diablo2", "invgrid", 1, ini);
     g_d2Belt    = (int)GetPrivateProfileIntA("Diablo2", "belt",    1, ini);
-    g_vidLog    = (int)GetPrivateProfileIntA("Diablo2", "videolog", 0, ini);
     {
         char w[48];
         w[0] = 0;
@@ -3673,8 +3938,9 @@ void GameFix_Tick(void)
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupInvGrid();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupEquipSlots();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupHitRegions();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupYBounds();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestIcons();
     if (g_targetRes && (frame % 30u) == 0) Diablo2InstallBeltHook();
-    if ((frame % 30u) == 0) Diablo2ResolveVideo();
 
     /* Re-arm the trace, so a panel opened later than the first second still
        shows up.  Cheap: a clear over the sites actually seen. */

@@ -90,8 +90,8 @@ void GameFix_Tick(void);
 
 /*
 ** Status log, written beside the game exe as g3fix.txt.  Enabled by
-**   [GameFix] log=1   in wideDriver.ini beside the exe,
-** or by setting the FX_GLIDE_GAMEFIX_LOG environment variable.
+**   [GameFix] log=1   in wideDriver.ini beside the exe, and by nothing else:
+** with no ini there is no log.
 **
 ** GAME-PATCHING.md section 6: write a status log before you write a theory.
 ** "Nothing happens" on hardware is consistent with three unrelated failures --
@@ -101,20 +101,6 @@ void GameFix_Tick(void);
 */
 void GameFix_Log(const char *fmt, ...);
 
-/*
-** Called at the top of grDrawVertexArrayContiguous.
-**
-** Diablo II's cinematics are drawn through this entry point, from a STATIC
-** vertex array inside D2Glide, so a pointer compare identifies them exactly --
-** no return-address walking and no code patch in the game.  Everything else
-** costs one test and returns.
-**
-** For now it only measures (see [Diablo2] videolog in gamefix.c); it takes the
-** array by pointer because the transform that resizes the movie will rewrite
-** those vertices in place.
-*/
-void GameFix_VertexArray(unsigned int mode, unsigned int count,
-                         void *pointers, unsigned int stride);
 
 #ifdef __cplusplus
 }
