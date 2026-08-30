@@ -448,6 +448,21 @@ static int          g_inSwap   = 0;
 static void GameFix_LogFlush(void);
 
 /*
+** Is the running exe one this file has a profile for?
+**
+** Everything below is gated on it, and that is not tidiness -- it is the
+** difference between a driver-wide feature and a per-game one.  glide3x.dll is
+** loaded by every Glide app on the machine, and the Glide2 wrapper next door
+** uses the SAME config filename and the SAME [GameFix] section for its own
+** games.  Ungated, this file read GTA2's, Ignition's and Driver's
+** wideDriver.ini, and would write g3fix.txt and the watchdog's g3watch.txt
+** into their folders.
+**
+** Defined after g_profiles, so this is only the prototype.
+*/
+static int GameFix_ExeIsOurs(void);
+
+/*
 ** Enabled by [GameFix] log=1 in wideDriver.ini beside the exe.  Decided once
 ** and cached: this is called from per-frame paths.
 **
@@ -463,6 +478,10 @@ static int GameFix_LogEnabled(void)
     char ini[MAX_PATH];
 
     if (g_logOn >= 0) return g_logOn;
+
+    /* Another game's ini is not ours to read, and its folder is not ours to
+       write into.  The wrapper's games use this very filename. */
+    if (!GameFix_ExeIsOurs()) { g_logOn = 0; return 0; }
 
     g_logOn = (PathBesideExe(GAMEFIX_INI, ini) &&
                GetPrivateProfileIntA("GameFix", "log", 0, ini) != 0) ? 1 : 0;
@@ -3687,6 +3706,32 @@ static const GameProfile g_profiles[] = {
 
 static const unsigned int g_profileCount = COUNT(g_profiles);
 
+/*
+** The gate itself.  Cached: called from per-frame paths through the log.
+**
+** A profile's exeName is matched with PathEndsWith, exactly as GameFix_Apply
+** matches it, so the two cannot disagree about whose process this is.
+*/
+static int GameFix_ExeIsOurs(void)
+{
+    static int   ours = -1;
+    unsigned int i;
+
+    if (ours >= 0) return ours;
+
+    if (!g_exeKnown) {
+        DWORD len = GetModuleFileNameA(NULL, g_exePath, MAX_PATH);
+        if (len == 0 || len >= (DWORD)MAX_PATH) return 0;   /* retry later */
+        g_exeKnown = 1;
+    }
+
+    ours = 0;
+    for (i = 0; i < g_profileCount; i++) {
+        if (PathEndsWith(g_exePath, g_profiles[i].exeName)) { ours = 1; break; }
+    }
+    return ours;
+}
+
 
 /* ======================================================================== */
 /* Public entry points                                                      */
@@ -3710,6 +3755,7 @@ int GameFix_IniResolution(void)
     char ini[MAX_PATH];
     char buf[32];
 
+    if (!GameFix_ExeIsOurs()) return 0;
     if (!PathBesideExe(GAMEFIX_INI, ini)) return 0;
 
     buf[0] = '\0';
@@ -3776,6 +3822,11 @@ void GameFix_Apply(void)
     char         ini[MAX_PATH];
     BOOL         haveIni;
     unsigned int i;
+
+    /* Before anything, including the crash filter and the watchdog: those
+       install per process and write files beside the exe, and this DLL is
+       loaded by every Glide app on the machine. */
+    if (!GameFix_ExeIsOurs()) return;
 
     if (!g_exeKnown) {
         DWORD len = GetModuleFileNameA(NULL, g_exePath, MAX_PATH);

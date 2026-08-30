@@ -130,28 +130,50 @@ typedef FxI32 GrScreenResolution_t;
 #define GR_RESOLUTION_1920x1440 0x15
 #define GR_RESOLUTION_2048x1536 0x16
 #define GR_RESOLUTION_2048x2048 0x17
-/* Extended */
-#define GR_RESOLUTION_768x480   0x18	/* 16:10 */
-#define GR_RESOLUTION_960x600   0x19	/* 16:10 */
-#define GR_RESOLUTION_1064x600  0x1A	/* 16:9 */
-#define GR_RESOLUTION_1144x480  0x1B	/* 21:9 */
-#define GR_RESOLUTION_1400x600  0x1C	/* 21:9 */
-#define GR_RESOLUTION_1280x720  0x1D	/* 16:9 */
-#define GR_RESOLUTION_1280x800  0x1E	/* 16:10 */
-#define GR_RESOLUTION_1360x768  0x1F	/* 16:9 */
-#define GR_RESOLUTION_1440x900  0x20	/* 16:10 */
-#define GR_RESOLUTION_1600x900  0x21	/* 16:9 */
-#define GR_RESOLUTION_1680x720  0x22	/* 21:9 */
-#define GR_RESOLUTION_1680x1050 0x23	/* 16:10 */
-#define GR_RESOLUTION_1792x768  0x24	/* 21:9 */
-#define GR_RESOLUTION_1920x800  0x25	/* 21:9 */
-#define GR_RESOLUTION_1920x1080 0x26	/* 16:9 */
-#define GR_RESOLUTION_1920x1200 0x27	/* 16:10 */
-#define GR_RESOLUTION_1960x840  0x28	/* 21:9 */
-#define GR_RESOLUTION_2096x900  0x29	/* 21:9 */
-#define GR_RESOLUTION_2304x960  0x2A	/* 21:9 */
-#define GR_RESOLUTION_2560x1080 0x2B	/* 21:9 */
-#define GR_RESOLUTION_3840x2160 0x2C	/* just for a high max, still invalid */
+/* Extended
+ *
+ * APPENDED, never inserted.  These values are an ABI: the driver indexes
+ * _resTable by them, the registry stores one as the Glide Override Resolution,
+ * the INF's Tweak Map maps the dropdown onto them, the .reg files name them,
+ * MesaFX mirrors them and the Glide2 wrapper next door mirrors them again.
+ *
+ * The five 480/600-line modes were once inserted at the HEAD of this block,
+ * which shifted all sixteen entries above by +5 and silently changed what
+ * every stored number meant -- 2560x1080 went 0x26 -> 0x2B, so a saved
+ * override of 0x26 started selecting 1920x1080.  The wrapper still read 0x26
+ * as 2560x1080 and patched Ignition's FOV and UI for a screen 640 pixels wider
+ * than the one it got: zoomed in, HUD off the edge.
+ *
+ * So: a new mode goes at the END, whatever its size.  Nothing here needs to be
+ * sorted, and sorting it costs an ABI break.
+ */
+#define GR_RESOLUTION_1280x720  0x18	/* 16:9 */
+#define GR_RESOLUTION_1280x800  0x19	/* 16:10 */
+#define GR_RESOLUTION_1360x768  0x1A	/* 16:9 */
+#define GR_RESOLUTION_1440x900  0x1B	/* 16:10 */
+#define GR_RESOLUTION_1600x900  0x1C	/* 16:9 */
+#define GR_RESOLUTION_1680x720  0x1D	/* 21:9 */
+#define GR_RESOLUTION_1680x1050 0x1E	/* 16:10 */
+#define GR_RESOLUTION_1792x768  0x1F	/* 21:9 */
+#define GR_RESOLUTION_1920x800  0x20	/* 21:9 */
+#define GR_RESOLUTION_1920x1080 0x21	/* 16:9 */
+#define GR_RESOLUTION_1920x1200 0x22	/* 16:10 */
+#define GR_RESOLUTION_1960x840  0x23	/* 21:9 */
+#define GR_RESOLUTION_2096x900  0x24	/* 21:9 */
+#define GR_RESOLUTION_2304x960  0x25	/* 21:9 */
+#define GR_RESOLUTION_2560x1080 0x26	/* 21:9 */
+/* Appended 2026-08: 480- and 600-line widescreen modes, for games whose UI is
+ * fixed to a stock height (Diablo II).  Appended, per the note above. */
+#define GR_RESOLUTION_768x480   0x27	/* 16:10 */
+#define GR_RESOLUTION_960x600   0x28	/* 16:10 */
+#define GR_RESOLUTION_1064x600  0x29	/* 16:9 */
+#define GR_RESOLUTION_1144x480  0x2A	/* 21:9 */
+#define GR_RESOLUTION_1400x600  0x2B	/* 21:9 */
+/* Oversized and unselectable, and deliberately LAST: several bounds are
+ * written as `res > GR_RESOLUTION_3840x2160`, so it has to stay the highest
+ * value or those checks start rejecting real modes.  A new mode goes BEFORE
+ * this line, never after it. */
+#define GR_RESOLUTION_3840x2160 0x2C
 #define GR_RESOLUTION_NONE      0xff
 
 #ifdef GR_RESOLUTION_MAX

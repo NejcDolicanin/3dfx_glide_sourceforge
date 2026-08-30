@@ -876,12 +876,10 @@ ResEntry
         {GR_RESOLUTION_1920x1440, 1920, 1440}, /* 0x15 */
         {GR_RESOLUTION_2048x1536, 2048, 1536}, /* 0x16 */
         {GR_RESOLUTION_2048x2048, 2048, 2048}, /* 0x17 */
-        /* nd Extended */
-        {GR_RESOLUTION_768x480, 768, 480},
-        {GR_RESOLUTION_960x600, 960, 600},
-        {GR_RESOLUTION_1064x600, 1064, 600},
-        {GR_RESOLUTION_1144x480, 1144, 480},
-        {GR_RESOLUTION_1400x600, 1400, 600},
+        /* nd Extended.  Enum order, and the enum is APPEND-ONLY -- see the
+           note in sst1vid.h.  This table is indexed by the enum directly, so
+           reordering it silently changes what every stored resolution number
+           means. */
         {GR_RESOLUTION_1280x720, 1280, 720},
         {GR_RESOLUTION_1280x800, 1280, 800},
         {GR_RESOLUTION_1360x768, 1360, 768},
@@ -897,7 +895,14 @@ ResEntry
         {GR_RESOLUTION_2096x900, 2096, 900},
         {GR_RESOLUTION_2304x960, 2304, 960},
         {GR_RESOLUTION_2560x1080, 2560, 1080},
-        /* This one added so we have an unreachable max, if more come */
+        /* Appended 2026-08: 480/600-line widescreen modes */
+        {GR_RESOLUTION_768x480, 768, 480},
+        {GR_RESOLUTION_960x600, 960, 600},
+        {GR_RESOLUTION_1064x600, 1064, 600},
+        {GR_RESOLUTION_1144x480, 1144, 480},
+        {GR_RESOLUTION_1400x600, 1400, 600},
+        /* Unreachable max, and it must stay LAST: bounds elsewhere are written
+           as `res > GR_RESOLUTION_3840x2160`.  New modes go above this line. */
         {GR_RESOLUTION_3840x2160, 3840, 2160}};
 
 /* Number of entries in _resTable, derived from the table itself so it cannot
