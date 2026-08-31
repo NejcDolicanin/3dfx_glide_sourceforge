@@ -2555,6 +2555,55 @@ static void Diablo2FixupEquipSlots(void)
 #define D2_INV_PANEL_B 0x6fbb1614u
 
 /*
+** ALL SEVEN panel grids, for the vertical correction.
+**
+** Only the inventory's is moved horizontally: the other six are the stash, the
+** cube and the vendor's, which are LEFT-hand panels and are already correct in
+** x at any width.  That is why they were left alone entirely -- and at 600
+** lines "entirely" was indistinguishable from "in x", because the vertical
+** correction is zero there.
+**
+** Above 600 they come apart exactly as the inventory did.  The vendor's panel
+** background follows the screen (it is drawn by the shared side-panel code)
+** and its grid does not, so the goods hang in the air above the panel and
+** nothing in the grid can be clicked.
+**
+** Same descriptor layout throughout: x at +04, right at +08, y at +0c,
+** bottom at +10, cell size at +14.
+*/
+/*
+** The TRADER panel's outer gate, and the same lesson a third time.
+**
+** Moving all seven grids put the vendor's goods in the right place and left
+** nothing on the panel clickable -- not the items, not the buttons.  That is
+** the signature of a gate, not of a coordinate: a gate rejects before any
+** inner rect is consulted, so every correction behind it is invisible.
+**
+** 6fb496fd tests 6fbb1718/171c/1720/1724 and only then falls through to the
+** vendor grid's own rect at 6fbb16c4.., which we do move:
+**
+**     cmp eax,ebx            ; ebx = [6fbb1718], the left bound
+**     cmp eax,[6fbb171c] jg  ; right
+**     cmp edi,[6fbb1720] jl  ; top
+**     cmp edi,[6fbb1724] jg  ; bottom
+**
+** Y only: the trade panel is anchored at x=0, so its horizontal bounds are
+** already right at any width -- which is exactly why this never showed until a
+** mode taller than 600.  The left/right pair is logged anyway, so a run says
+** whether that assumption holds rather than leaving it assumed.
+*/
+#define D2_TRADE_GATE_L 0x6fbb1718u
+#define D2_TRADE_GATE_R 0x6fbb171cu
+#define D2_TRADE_GATE_T 0x6fbb1720u
+#define D2_TRADE_GATE_B 0x6fbb1724u
+
+#define D2_GRID_N 7
+static const unsigned int kGridDesc[D2_GRID_N] = {
+    0x6fbb1598u, 0x6fbb15e0u, 0x6fbb1680u, 0x6fbb16a8u,
+    0x6fbb16c0u, 0x6fbb16d8u, 0x6fbb16f0u
+};
+
+/*
 ** Move a hardcoded HOVER REGION.
 **
 ** The orbs and the ability icons are the one part of the UI that Diablo II
@@ -3432,9 +3481,21 @@ static void Diablo2FixupInvGrid(void)
                   &last[0], &last[1], &a, &b))
         GameFix_Log("invgrid: grid x %u..%u -> %u..%u", a, b, a + d, b + d);
 
-    if (ShiftPair(cli, D2_INV_TOP, D2_INV_BOT, dy,
-                  &last[2], &last[3], &a, &b))
-        GameFix_Log("invgrid: grid y %u..%u -> %u..%u", a, b, a + dy, b + dy);
+    /* Y on every grid, not just the inventory's: the stash, cube and vendor
+       sit in panels that follow the screen height and their own descriptors do
+       not.  ShiftPair skips an empty one (the game fills them lazily) and
+       remembers what it wrote, so this is safe to run every tick. */
+    {
+        static unsigned int lastY[D2_GRID_N][2];
+        unsigned int g;
+        for (g = 0; g < D2_GRID_N; g++) {
+            if (ShiftPair(cli, kGridDesc[g] + 0x0cu, kGridDesc[g] + 0x10u, dy,
+                          &lastY[g][0], &lastY[g][1], &a, &b))
+                GameFix_Log("invgrid: grid %u (%08lx) y %u..%u -> %u..%u",
+                            g, (unsigned long)kGridDesc[g], a, b,
+                            a + dy, b + dy);
+        }
+    }
 
     if (ShiftPair(cli, D2_INV_PANEL_L, D2_INV_PANEL_R, d,
                   &last[4], &last[5], &a, &b))
@@ -3443,6 +3504,22 @@ static void Diablo2FixupInvGrid(void)
     if (ShiftPair(cli, D2_INV_PANEL_T, D2_INV_PANEL_B, dy,
                   &last[6], &last[7], &a, &b))
         GameFix_Log("invgrid: panel gate y %u..%u -> %u..%u", a, b, a + dy, b + dy);
+
+    /* The trade panel's gate.  Y only -- see the note by D2_TRADE_GATE_L. */
+    {
+        static unsigned int lastT[2];
+        unsigned int l = 0, r = 0;
+        if (ShiftPair(cli, D2_TRADE_GATE_T, D2_TRADE_GATE_B, dy,
+                      &lastT[0], &lastT[1], &a, &b)) {
+            GameFix_Log("invgrid: trade gate y %u..%u -> %u..%u",
+                        a, b, a + dy, b + dy);
+            /* Reported, not corrected: if these are not already screen-correct
+               the panel is not left-anchored after all and needs an x rule. */
+            if (ReadModuleGlobal(cli, D2_TRADE_GATE_L, &l) &&
+                ReadModuleGlobal(cli, D2_TRADE_GATE_R, &r))
+                GameFix_Log("invgrid: trade gate x %u..%u (left alone)", l, r);
+        }
+    }
 }
 
 /*
