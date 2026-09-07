@@ -1102,7 +1102,7 @@ calcBufferSizeInTiles(hwcBoardInfo* bInfo, FxU32 xres, FxU32 yres);
 static FxU32
 calcBufferHeightInTiles(hwcBoardInfo* bInfo, FxU32 yres);
 
-static FxBool resolutionSupported[HWC_MAX_BOARDS][0x20][0x10];
+static FxBool resolutionSupported[HWC_MAX_BOARDS][GR_RESOLUTION_MAX + 1][0x10];
 
 /* 
 ** DOS-only stuff for multi-chip boards.
