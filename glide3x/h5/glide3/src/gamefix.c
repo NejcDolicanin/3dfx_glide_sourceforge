@@ -3668,6 +3668,349 @@ static void Diablo2Report(void)
         GameFix_Log("  live glide:  %s", gl ? "unreadable" : "not loaded");
 }
 
+/* ------------------------------------------------------------------------ */
+/* Cinematics: scaled to the screen                                           */
+/* ------------------------------------------------------------------------ */
+/*
+** Diablo II plays its Bink movies in D2Glide, writing every decoded frame
+** straight into the FRONT buffer through the LFB, 1:1, centred on its own idea
+** of the screen size (0x6f865a78 W, 0x6f865b14 H):
+**
+**     6f85dabd  grLfbLock(WRITE_ONLY, FRONT, 8888, UPPER_LEFT, FALSE, &info)
+**     6f85dc00  dstX = (W - bink.Width)  / 2, rounded up to 4
+**     6f85dc22  dstY = (H - bink.Height) / 2
+**     6f85daee  BinkCopyToBuffer(bink, info.lfbPtr, info.strideInBytes,
+**                                bink.Height, dstX, dstY, 2)
+**
+** Stock, a movie gets a 640x480 context of its own and the monitor stretches
+** it.  With the override every context is the full mode, so a 640x292 frame
+** sits small in the middle of the screen.
+**
+** The fix takes over that one import.  The frame is decoded into a buffer of
+** our own at its native size, then written into the LFB magnified -- as large
+** as fits with its aspect kept, centred.  A 640x292 cinematic fills the height
+** of a 1920x800 screen (1753x800); the 640x480 logos fill it at 1066x800.  The
+** bars stay black: PlayMovie clears the screen before the first frame, and
+** nothing here writes outside the picture.
+**
+** It is done at the Bink boundary and not with the Voodoo's overlay scaler.
+** The scaler would cost nothing per frame, but it needs a context rendered at
+** a different size from its video mode -- driver plumbing, not a game patch --
+** and it cannot run alongside SLI or AA.  This costs CPU and bus bandwidth
+** instead and leaves the context exactly as it was.
+**
+** The cost is bus bandwidth -- 1920x876 at four bytes a pixel is 6.7 MB a
+** frame, 25 frames a second, which stutters -- so two things keep it down:
+**
+**   - 16 bits.  D2Glide's lock asks for 8888.  Its grLfbLock import is
+**     wrapped so that this one lock asks for 565 instead, and the frame is
+**     converted while it is expanded: half the bytes.  If the driver refuses
+**     565 the original request goes through and the frame is written at 32.
+**   - Only what changed.  Each source row is compared with the one written
+**     last frame -- in system memory, where that costs nothing -- and the
+**     screen lines it maps to are rewritten only if it differs.  Dark and slow
+**     shots then cost almost nothing.  The first frame of a movie and any
+**     change of size write everything.  This relies on nothing else touching
+**     the front buffer mid-movie, and nothing does: PlayMovie clears it once,
+**     before the first frame, and the loop never swaps.
+**
+** Nearest-neighbour both ways.  Each distinct source row is expanded once into
+** a system-memory row, which is then copied to every screen line that maps to
+** it: whole-row copies are what a write-combined LFB is good at, and the LFB
+** is never READ -- reads cross the bus uncached.
+**
+** Every movie goes through here -- the startup logos and intro (D2Launch),
+** the Cinematics menu, the in-game act movies (D2Client) -- because they all
+** end in this one D2Glide routine, 0x6f85da50.
+*/
+#define D2_GL_IAT_BINKCOPY  0x6f8611b0u   /* D2Glide's _BinkCopyToBuffer@28 */
+#define D2_GL_IAT_LFBLOCK   0x6f8611e0u   /* D2Glide's _grLfbLock@24 */
+#define D2_GL_SCREEN_W      0x6f865a78u
+#define D2_GL_SCREEN_H      0x6f865b14u
+#define D2_MOVIE_MAX        2048u         /* sanity bound on a frame's size */
+#define D2_SCREEN_MAX       4096u
+
+typedef int (WINAPI *D2BinkCopyFn)(void *bink, void *dest, int pitch,
+                                   unsigned int destH, unsigned int x,
+                                   unsigned int y, unsigned int flags);
+
+typedef struct {                          /* GrLfbInfo_t, glide3.h */
+    int           size;
+    void         *lfbPtr;
+    unsigned int  strideInBytes;
+    int           writeMode;
+    int           origin;
+} D2LfbInfo;
+
+typedef int (WINAPI *D2LfbLockFn)(int type, int buffer, int writeMode,
+                                  int origin, int pixelPipeline,
+                                  D2LfbInfo *info);
+
+static int           g_d2Movies     = 1;      /* [Diablo2] movies= */
+static int           g_d2MovieTried = 0;
+static HMODULE       g_d2MovieGl    = NULL;
+static D2BinkCopyFn  g_d2BinkCopy   = NULL;   /* binkw32's own */
+static D2LfbLockFn   g_d2LfbLock    = NULL;   /* the driver's own */
+static unsigned int  g_d2MovieBpp   = 4;      /* of the lock just taken */
+
+/* Scratch, grown on demand and kept: a movie is 25 frames a second.  The
+   decoded frame must also PERSIST between frames of one movie, in case Bink
+   only rewrites the blocks that changed. */
+static unsigned int *g_d2MovieSrc   = NULL;   /* decoded frame, native size */
+static unsigned int *g_d2MoviePrev  = NULL;   /* the frame last written */
+static unsigned int  g_d2MovieSrcN  = 0;      /* pixels, both of the above */
+static unsigned int *g_d2MovieRow   = NULL;   /* one expanded screen row */
+static unsigned int *g_d2MovieXMap  = NULL;   /* screen x -> source x */
+static unsigned int  g_d2MovieRowN  = 0;      /* pixels, both of the above */
+static const void   *g_d2MovieBink  = NULL;   /* movie g_d2MoviePrev is of */
+static unsigned int  g_d2MovieKey[5];         /* bw,bh,outW,outH,bpp */
+
+static BOOL D2MovieGrow(unsigned int srcN, unsigned int rowN)
+{
+    HANDLE heap = GetProcessHeap();
+
+    if (srcN > g_d2MovieSrcN) {
+        if (g_d2MovieSrc)  HeapFree(heap, 0, g_d2MovieSrc);
+        if (g_d2MoviePrev) HeapFree(heap, 0, g_d2MoviePrev);
+        g_d2MovieSrc  = (unsigned int *)HeapAlloc(heap, HEAP_ZERO_MEMORY,
+                                                  srcN * 4u);
+        g_d2MoviePrev = (unsigned int *)HeapAlloc(heap, 0, srcN * 4u);
+        g_d2MovieSrcN = srcN;
+        g_d2MovieBink = NULL;                 /* Prev holds nothing yet */
+        if (!g_d2MovieSrc || !g_d2MoviePrev) {
+            if (g_d2MovieSrc)  HeapFree(heap, 0, g_d2MovieSrc);
+            if (g_d2MoviePrev) HeapFree(heap, 0, g_d2MoviePrev);
+            g_d2MovieSrc  = NULL;
+            g_d2MoviePrev = NULL;
+            g_d2MovieSrcN = 0;
+            return FALSE;
+        }
+    }
+
+    if (rowN > g_d2MovieRowN) {
+        if (g_d2MovieRow)  HeapFree(heap, 0, g_d2MovieRow);
+        if (g_d2MovieXMap) HeapFree(heap, 0, g_d2MovieXMap);
+        g_d2MovieRow  = (unsigned int *)HeapAlloc(heap, 0, rowN * 4u);
+        g_d2MovieXMap = (unsigned int *)HeapAlloc(heap, 0, rowN * 4u);
+        g_d2MovieRowN = rowN;
+        g_d2MovieKey[0] = 0;                  /* the x map must be rebuilt */
+        if (!g_d2MovieRow || !g_d2MovieXMap) {
+            if (g_d2MovieRow)  HeapFree(heap, 0, g_d2MovieRow);
+            if (g_d2MovieXMap) HeapFree(heap, 0, g_d2MovieXMap);
+            g_d2MovieRow  = NULL;
+            g_d2MovieXMap = NULL;
+            g_d2MovieRowN = 0;
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+/*
+** Stands in for BinkCopyToBuffer in D2Glide's import table.
+**
+** `dest` is whatever the lock just before produced: 565 when the wrapper below
+** got its way (g_d2MovieBpp 2), otherwise the 8888 D2Glide asked for.  At 8888
+** anything this does not understand goes to the real BinkCopyToBuffer with the
+** caller's own arguments, exactly as stock.  At 565 there is no such fallback
+** -- Bink is asked for 32 bits and cannot write them into a 16-bit lock -- so
+** every frame is drawn here, at native size and at the caller's own position
+** when it cannot be magnified.
+*/
+static int WINAPI D2BinkCopyScaled(void *bink, void *dest, int pitch,
+                                   unsigned int destH, unsigned int x,
+                                   unsigned int y, unsigned int flags)
+{
+    const unsigned int *b   = (const unsigned int *)bink;
+    unsigned int        bpp = g_d2MovieBpp;
+    unsigned int  W = 0, H = 0, bw, bh, lfbW, maxW, fw, fh;
+    unsigned int  outW, outH, x0, y0, row, sy, lastSy, i;
+    unsigned char *line;
+    int            r, full, dirty = 0;
+
+    g_d2MovieBpp = 4u;                        /* one lock, one copy */
+
+    bw = b ? b[0] : 0u;                       /* BINK.Width, BINK.Height */
+    bh = b ? b[1] : 0u;
+    if (!dest || pitch <= 0 || bw == 0u || bh == 0u ||
+        bw > D2_MOVIE_MAX || bh > D2_MOVIE_MAX)
+        return (bpp == 4u)
+               ? g_d2BinkCopy(bink, dest, pitch, destH, x, y, flags) : 0;
+
+    /* The stock placement, unless it can be magnified. */
+    outW = bw;  outH = bh;  x0 = x;  y0 = y;
+
+    if (ReadModuleGlobal(g_d2MovieGl, D2_GL_SCREEN_W, &W) &&
+        ReadModuleGlobal(g_d2MovieGl, D2_GL_SCREEN_H, &H) &&
+        W != 0u && H != 0u && W <= D2_SCREEN_MAX && H <= D2_SCREEN_MAX) {
+        /* How wide the lock is, from its own stride.  The 565 lock is the
+           raw buffer (glfb.c: write-only in the framebuffer's own format)
+           and is as wide as the screen.  The 8888 one is the 3D LFB, which
+           is 2048 pixels wide whatever the screen, so on a wider screen only
+           its left 2048 columns can be reached: the picture is centred on
+           the SCREEN, so its right edge, (W + outW) / 2, has to stay inside,
+           i.e. outW <= 2*lfbW - W. */
+        lfbW = (unsigned int)pitch / bpp;
+        if (W <= lfbW)          maxW = W;
+        else if (2u * lfbW > W) maxW = 2u * lfbW - W;
+        else                    maxW = 0u;
+
+        /* As large as fits with the aspect kept: whichever of maxW/bw and
+           H/bh is smaller limits, compared by cross-multiplying. */
+        if (maxW * bh <= H * bw) { fw = maxW; fh = (bh * maxW) / bw; }
+        else                     { fh = H;    fw = (bw * H) / bh; }
+
+        if (fw > bw && fh > bh) {             /* magnification only */
+            outW = fw;
+            outH = fh;
+            x0   = ((W - fw) / 2u) & ~1u;     /* even: dword-aligned rows */
+            y0   = (H - fh) / 2u;
+        }
+    }
+
+    if (bpp == 4u && outW == bw)              /* nothing to scale or convert */
+        return g_d2BinkCopy(bink, dest, pitch, destH, x, y, flags);
+
+    if (!D2MovieGrow(bw * bh, outW))
+        return (bpp == 4u)
+               ? g_d2BinkCopy(bink, dest, pitch, destH, x, y, flags) : 0;
+
+    r = g_d2BinkCopy(bink, g_d2MovieSrc, (int)(bw * 4u), bh, 0u, 0u, flags);
+
+    /* BINK.FrameNum is 1 on a movie's first frame. */
+    full = (bink != g_d2MovieBink) || (b[3] <= 1u);
+    g_d2MovieBink = bink;
+
+    if (g_d2MovieKey[0] != bw   || g_d2MovieKey[1] != bh ||
+        g_d2MovieKey[2] != outW || g_d2MovieKey[3] != outH ||
+        g_d2MovieKey[4] != bpp) {
+        /* Sampled at pixel centres, so the picture is not pulled a half
+           source pixel towards the top left. */
+        for (i = 0; i < outW; i++)
+            g_d2MovieXMap[i] = ((2u * i + 1u) * bw) / (2u * outW);
+        g_d2MovieKey[0] = bw;
+        g_d2MovieKey[1] = bh;
+        g_d2MovieKey[2] = outW;
+        g_d2MovieKey[3] = outH;
+        g_d2MovieKey[4] = bpp;
+        full = 1;
+        GameFix_Log("movie: %ux%u frame drawn %ux%u at %u,%u of %ux%u,"
+                    " %u-bit", bw, bh, outW, outH, x0, y0, W, H, bpp * 8u);
+    }
+
+    line   = (unsigned char *)dest + y0 * (unsigned int)pitch + x0 * bpp;
+    lastSy = 0xffffffffu;
+    for (row = 0; row < outH; row++) {
+        sy = ((2u * row + 1u) * bh) / (2u * outH);
+        if (sy != lastSy) {
+            const unsigned int *src  = g_d2MovieSrc  + sy * bw;
+            unsigned int       *prev = g_d2MoviePrev + sy * bw;
+
+            dirty = full || memcmp(src, prev, bw * 4u) != 0;
+            if (dirty) {
+                memcpy(prev, src, bw * 4u);
+                if (bpp == 2u) {
+                    unsigned short *o = (unsigned short *)g_d2MovieRow;
+                    for (i = 0; i < outW; i++) {
+                        unsigned int p = src[g_d2MovieXMap[i]];
+                        o[i] = (unsigned short)(((p >> 8) & 0xf800u) |
+                                                ((p >> 5) & 0x07e0u) |
+                                                ((p >> 3) & 0x001fu));
+                    }
+                } else {
+                    for (i = 0; i < outW; i++)
+                        g_d2MovieRow[i] = src[g_d2MovieXMap[i]];
+                }
+            }
+            lastSy = sy;
+        }
+        if (dirty) memcpy(line, g_d2MovieRow, outW * bpp);
+        line += pitch;
+    }
+    return r;
+}
+
+/*
+** Stands in for grLfbLock in D2Glide's import table.  D2Glide takes two
+** locks: the movie's (write-only, front, 8888, upper left, no pipeline) at
+** 0x6f85dabd, and a screenshot's (read-only, back, any) at 0x6f85caa0.  Only
+** the first matches, and it is asked for 565 instead; D2BinkCopyScaled, which
+** always follows it, is told through g_d2MovieBpp.  If the driver refuses,
+** the original request goes through untouched.
+*/
+static int WINAPI D2LfbLockMovie(int type, int buffer, int writeMode,
+                                 int origin, int pixelPipeline,
+                                 D2LfbInfo *info)
+{
+    g_d2MovieBpp = 4u;
+    if (type == 1 && buffer == 0 && writeMode == 5 && origin == 0 &&
+        !pixelPipeline && info &&
+        g_d2LfbLock(type, buffer, 0 /* 565 */, origin, pixelPipeline, info)) {
+        g_d2MovieBpp = 2u;
+        return 1;
+    }
+    return g_d2LfbLock(type, buffer, writeMode, origin, pixelPipeline, info);
+}
+
+/*
+** Once.  Each slot must still hold the export it was built against: a
+** different build, or some other tool that hooked it first, is left alone.
+** Without the BinkCopyToBuffer hook the movies play at native size as before;
+** without the grLfbLock one they are scaled but written at 32 bits.
+*/
+static void Diablo2InstallMovieHook(void)
+{
+    HMODULE      gl, bink, gx;
+    FARPROC      real, lock;
+    unsigned int cur = 0;
+
+    if (g_d2MovieTried || !g_d2Movies) return;
+    gl = GetModuleHandleA("D2Glide.dll");
+    if (!gl) return;                          /* not yet: try again later */
+    g_d2MovieTried = 1;
+
+    bink = GetModuleHandleA("binkw32.dll");
+    real = bink ? GetProcAddress(bink, "_BinkCopyToBuffer@28") : NULL;
+    if (!real || !ReadModuleGlobal(gl, D2_GL_IAT_BINKCOPY, &cur) ||
+        cur != (unsigned int)real) {
+        GameFix_Log("movie: BinkCopyToBuffer slot is %08lx, expected %08lx"
+                    " -- movies left at native size",
+                    (unsigned long)cur, (unsigned long)(unsigned int)real);
+        return;
+    }
+
+    g_d2MovieGl  = gl;
+    g_d2BinkCopy = (D2BinkCopyFn)real;
+    if (!WriteModuleGlobal(gl, D2_GL_IAT_BINKCOPY,
+                           (unsigned int)&D2BinkCopyScaled)) {
+        GameFix_Log("movie: could not write the BinkCopyToBuffer slot");
+        return;
+    }
+    GameFix_Log("movie: BinkCopyToBuffer hooked, real=%08lx",
+                (unsigned long)cur);
+
+    /* 16-bit writes.  Optional: the scaling works without them. */
+    gx   = GetModuleHandleA("glide3x.dll");
+    lock = gx ? GetProcAddress(gx, "_grLfbLock@24") : NULL;
+    cur  = 0;
+    if (!lock || !ReadModuleGlobal(gl, D2_GL_IAT_LFBLOCK, &cur) ||
+        cur != (unsigned int)lock) {
+        GameFix_Log("movie: grLfbLock slot is %08lx, expected %08lx"
+                    " -- frames written at 32 bits",
+                    (unsigned long)cur, (unsigned long)(unsigned int)lock);
+        return;
+    }
+
+    g_d2LfbLock = (D2LfbLockFn)lock;
+    if (!WriteModuleGlobal(gl, D2_GL_IAT_LFBLOCK,
+                           (unsigned int)&D2LfbLockMovie)) {
+        GameFix_Log("movie: could not write the grLfbLock slot"
+                    " -- frames written at 32 bits");
+        return;
+    }
+    GameFix_Log("movie: grLfbLock hooked -- frames written at 16 bits");
+}
+
 /*
 ** Per-module gates, from wideDriver.ini beside the exe:
 **
@@ -3675,6 +4018,7 @@ static void Diablo2Report(void)
 **   gfx=1        D2gfx.dll    GetResolutionSize
 **   client=1     D2Client.dll live screen size
 **   glide=1      D2Glide.dll  renderer size globals
+**   movies=1     D2Glide.dll  cinematics scaled to the screen
 **
 ** All default to 1.  They exist because the three groups fail differently and
 ** a hardware trip per guess is the expensive currency here: setting all three
@@ -3692,6 +4036,7 @@ static void Diablo2ReadIni(const char *ini)
     g_d2Gfx    = (int)GetPrivateProfileIntA("Diablo2", "gfx",    1, ini);
     g_d2Client = (int)GetPrivateProfileIntA("Diablo2", "client", 1, ini);
     g_d2Glide  = (int)GetPrivateProfileIntA("Diablo2", "glide",  1, ini);
+    g_d2Movies = (int)GetPrivateProfileIntA("Diablo2", "movies", 1, ini);
     g_d2Trace  = (int)GetPrivateProfileIntA("Diablo2", "traceui", 0, ini);
     g_d2Menu   = (int)GetPrivateProfileIntA("Diablo2", "menu",    1, ini);
     g_d2InvGrid = (int)GetPrivateProfileIntA("Diablo2", "invgrid", 1, ini);
@@ -3986,6 +4331,7 @@ void GameFix_Apply(void)
 
     Diablo2FixupClient();
     Diablo2InstallDrawHook();
+    Diablo2InstallMovieHook();     /* D2Glide is mapped: it called grGlideInit */
     Diablo2Report();
 
     GameFix_LogFlush();
