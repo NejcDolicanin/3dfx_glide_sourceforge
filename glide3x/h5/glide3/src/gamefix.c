@@ -1099,27 +1099,27 @@ static BOOL ApplyProfile(const GameProfile *profile)
 **               GR_RESOLUTION_800x600, then grSstWinOpen.  Its own size
 **               globals are 0x6f865a78 (W) and 0x6f865b14 (H).
 **
-** The resolution enum it passes is deliberately NOT patched: the driver's
-** override replaces it inside grSstWinOpen regardless (gsst.c), so rewriting
-** it here would be a second source of truth for the same decision.  The two
-** size globals ARE patched, because nothing else tells D2Glide what the
-** driver did.
+** Both the resolution enum it passes and its two size globals are patched.
+** The enum was left alone at first, on the reasoning that the driver's
+** override rewrites it anyway; patching it is what lets the game ask for the
+** wide mode itself, with the override disabled -- see the note by
+** d2_gl_open640_find.  The globals are what tell D2Glide what it got.
 **
 ** Every mode arm is patched, not a chosen one.  Which mode Diablo II starts in
 ** depends on its own saved video settings, and patching only the arm we
 ** guessed would leave the other one live -- see "With an override active,
 ** patch EVERY mode entry" in GAME-PATCHING.md section 9.
 **
-** WHAT IS DELIBERATELY LEFT ALONE IN THIS FIRST BUILD
-** ---------------------------------------------------
-**   - 0x6fbcd2b4, D2Client's "this is the 800x600 layout" flag.  It selects
-**     which UI art the game loads.  Forcing it changes the asset set at the
-**     same time as the resolution, and then a wrong result has two possible
-**     causes instead of one.
-**   - D2Glide's texture-memory partitioning at 0x6f85d405, which has an
-**     explicit `W == 800 && H == 600` arm and a general fallback.  The
-**     fallback is what a patched build will take; whether that is adequate is
-**     a question for the hardware, not for reading.
+** WHAT WAS LEFT ALONE, AND WHAT BECAME OF IT
+** ------------------------------------------
+**   - 0x6fbcd2b4, D2Client's "this is the 800x600 layout" flag, is still not
+**     forced.  It picks the UI art set, and the game chooses it from its own
+**     video setting.  Several UI elements exist once per layout, though, so
+**     a fix has to be checked against the layout the log reports (see the
+**     two Quest Log button fixes).
+**   - D2Glide's texture-cache init at 0x6f85d405 was expected to be harmless
+**     and was not: its general arm builds no pools at all, which hung the game
+**     on the main menu.  It is patched -- "glide texcache gate" below.
 */
 
 /*
@@ -3696,6 +3696,10 @@ static void Diablo2FixupSkillPopup(void)
 ** The health orb it sits over has moved in by cx with the centred control
 ** panel, so the button follows it.  Its click test is corrected alongside it
 ** in g_d2Region.  The other arm (+020eb3, x = W/2 + 0x28) is left alone.
+**
+** Correct by reading only: every run so far was in the 800 layout, where the
+** button comes from the table fixed in Diablo2FixupQuestBtnRows and this
+** routine never reaches this arm.  An exact no-op at 800 wide.
 */
 static int g_questBtnDone = 0;
 
