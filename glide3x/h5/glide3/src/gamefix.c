@@ -1604,7 +1604,10 @@ static const D2Hook g_d2Hooks[] = {
     { "D2Client.dll", 0x6fb7fbc0u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10150" },
     { "D2Client.dll", 0x6fb7fbd0u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10047" },
     { "D2Client.dll", 0x6fb7fbdcu, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10069" },
-    { "D2Client.dll", 0x6fb7fbbcu, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli win#10137" },
+    /* Framed hover text (the weapon-swap tooltip, among others): __fastcall
+       like DrawText, x in edx and y as the first stack argument.  Was
+       trace-only, which is why a rule on it could never fire. */
+    { "D2Client.dll", 0x6fb7fbbcu, 0x6fab0000u, REG_EDX, 0, "cli win#10137" },
     { "D2Client.dll", 0x6fb7fc98u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli gfx#10047" },
     { "D2Client.dll", 0x6fb7fcc8u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli gfx#10041" },
     { "D2Client.dll", 0x6fb7fc74u, 0x6fab0000u, ARG_NONE, ARG_NONE, "cli gfx#10080" },
@@ -1755,9 +1758,15 @@ static const D2Fix2D g_d2Fix2D[] = {
        both are provably stock. */
     { D2_TAG_CLIENT, 0x08dfa7u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest title" },
     { D2_TAG_CLIENT, 0x08e00au, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest text"  },
-    /* The rolling SPEECH text, from the button on the quest panel.  Shares the
-       description's x=96 and arrives at y 432, well under by. */
-    { D2_TAG_CLIENT, 0x074aa5u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest speech" },
+    /*
+    ** The rolling SPEECH text has NO rule here any more -- see the ybound row
+    ** for +075aee.  One scroller (+074920) draws both the quest panel's
+    ** speech and every NPC's dialog, from a box position in two globals, and
+    ** a rule on its line draw (+074aa5) moved the NPC dialog down off its
+    ** box while leaving the partial lines at the box's edges (D2Win#10146,
+    ** unhooked) behind.  The box position is now corrected where the quest
+    ** panel sets it, so everything drawn from it moves together.
+    */
     /*
     ** The WAYPOINT panel's act tab and its "no other waypoints" line.
     **
@@ -1844,6 +1853,18 @@ static const D2Fix2D g_d2Fix2D[] = {
     ** down.  SUB and CENTRE together give back exactly (400, 299 + H-600).
     */
     { D2_TAG_CLIENT, 0x09daf0u, 0, 0, 0, 0, ADJ_X_SUB,  ADJ_Y_CENTRE, "cube horadric anim" },
+    /*
+    ** The WEAPON-SWAP tooltip ("Swap Weapons: W") over the inventory's I/II
+    ** tabs.  Drawn from constants inside the item-tooltip code:
+    **
+    **     +097dca  x = 0x170 or 0x258, + [6fbcd354]   left / right tab centre
+    **     +097dde  y = 0x15 - [6fbcd358]
+    **
+    ** Stock on both axes, in a panel pinned to the RIGHT edge and moved down
+    ** by H-600.  Which of the two x values is chosen is itself a stock test
+    ** of the mouse against 500 -- see Diablo2FixupSwapTip.
+    */
+    { D2_TAG_CLIENT, 0x097df7u, 0, 0, 0, 0, ADJ_X_RIGHT, ADJ_Y_BOTTOM, "weapon swap tip" },
 
     { D2_TAG_CLIENT, 0x09e0e2u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 535,217 */
     { D2_TAG_CLIENT, 0x09e127u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 536,263 */
@@ -3402,6 +3423,14 @@ typedef struct {
 ** the six of 81 /7 id.  modrm 0x00 in the table means that form.
 */
 #define YB_EAX 0x00u
+/*
+** Not a bound at all but a POSITION: `mov eax,imm32`, b8 id, also five bytes.
+** Same treatment -- the shipped immediate gets +by -- for a y that a panel
+** computes from a constant rather than from the screen height.
+*/
+#define YB_MOV_EAX 0x01u
+/* And `push imm32`, 68 id, five bytes: a position handed to a constructor. */
+#define YB_PUSH    0x02u
 
 /*
 ** THREE copies of the same two bounds, and patching one is not enough.
@@ -3458,9 +3487,95 @@ static const D2YBound g_d2YBound[] = {
     { 0x03f2d3u, 0xffu,   0x183u, "wp close top (edi)" },
     { 0x03f2dbu, 0xffu,   0x1a4u, "wp close bot (edi)" },
     { 0x040192u, YB_EAX,  0x183u, "wp close top (eax)" },
-    { 0x040199u, YB_EAX,  0x1a4u, "wp close bot (eax)" }
+    { 0x040199u, YB_EAX,  0x1a4u, "wp close bot (eax)" },
+    /*
+    ** The QUEST PANEL's speech box.  +075ab0 sets the scroller's box position
+    ** (x in 6fbd18e8, y in 6fba21f8) for two callers:
+    **
+    **     NPC dialog   x = (W - 0x145)/2   y = 0x0c                 correct
+    **     quest panel  x = [6fbcd354]      y = 0x105 - [6fbcd358]   stock
+    **
+    ** The NPC box is centred and at the top, which is right at any size.
+    ** The quest one is a constant inside a panel that has moved down by H-600,
+    ** so its speech scrolled in the empty space above the panel.  Moving the
+    ** constant moves everything drawn from the box together: full lines,
+    ** the part-lines clipped at its edges, and the hit test that reads it.
+    */
+    { 0x075aeeu, YB_MOV_EAX, 0x105u, "quest speech box y" },
+    /*
+    ** The GOLD dialog (withdraw from the stash, and its siblings from the same
+    ** constructor call in +01cae0).  It is a dialog.cpp object: the origin is
+    ** handed to the constructor (+015ec0) and stored at +0x2c/+0x30, and its
+    ** text, number field and buttons are all placed relative to that.  So one
+    ** constant moves the whole dialog, clicks included:
+    **
+    **     +01cc1b  68 8c 00 00 00   push 0x8c   ; y = 140   <- this one
+    **     +01cc20  68 d7 00 00 00   push 0xd7   ; x = 215
+    **
+    ** x stays: the stash is pinned to the left edge.  y follows the stash
+    ** down by H-600, which puts the dialog back over it the way it sits at
+    ** 800x600 instead of hanging above the panel's top edge.
+    */
+    { 0x01cc1bu, YB_PUSH, 0x8cu, "gold dialog y" },
+    /*
+    ** ...and its four CONTROLS, which are not dialog-relative at all.  Each
+    ** is its own object, built in the same function after the dialog with an
+    ** absolute stock position, and each keeps that position for both its
+    ** drawing and its click test -- so moving the dialog alone left the
+    ** arrows, the cursor and the two button faces hanging where it used to
+    ** be.  Same form, same +by:
+    **
+    **     +01cd5c  push 0xdb    arrows      6fac0d20(obj, 223, 219, ...)
+    **     +01cdbc  push 0xe4    amount box  6fac4330(obj, 258, 228, ...)
+    **     +01ce22  push 0x11f   OK          6fac35e0(obj, 250, 287, 0, ...)
+    **     +01ce84  push 0x11f   cancel      6fac35e0(obj, 355, 287, 1, ...)
+    */
+    { 0x01cd5cu, YB_PUSH, 0xdbu,  "gold dialog arrows y" },
+    { 0x01cdbcu, YB_PUSH, 0xe4u,  "gold dialog amount y" },
+    { 0x01ce22u, YB_PUSH, 0x11fu, "gold dialog ok y"     },
+    { 0x01ce84u, YB_PUSH, 0x11fu, "gold dialog cancel y" }
 };
 #define D2_YBOUND_N (sizeof(g_d2YBound) / sizeof(g_d2YBound[0]))
+
+/*
+** The weapon-swap tooltip's LEFT/RIGHT choice.
+**
+**     +097dc2  8d 91 f4 01 00 00   lea edx,[ecx+0x1f4]   ; [6fbcd354] + 500
+**     +097dc8  3b f2               cmp esi,edx           ; mouse x
+**              jle -> left tab text, else right
+**
+** 500 is the stock split between the inventory's two I/II tabs.  The panel is
+** pinned to the right edge, so the split has moved by W-800 with it; left
+** alone, every mouse position on a wide screen is "right of 500" and hovering
+** the LEFT tabs put the tooltip over the right ones.  One displacement, x
+** only, so it applies at 600 lines too.  Verified against the shipped bytes.
+*/
+static int g_swapTipDone = 0;
+
+static void Diablo2FixupSwapTip(void)
+{
+    static const unsigned char want[6] = { 0x8d, 0x91, 0xf4, 0x01, 0x00, 0x00 };
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned char *at;
+    unsigned char  repl[6];
+    unsigned int   split;
+
+    if (!cli || g_swapTipDone || g_targetW <= 800u) return;
+    g_swapTipDone = 1;                     /* one attempt, reported either way */
+
+    at = (unsigned char *)((unsigned int)cli + 0x097dc2u);
+    if (IsBadReadPtr(at, 6) || memcmp(at, want, 6) != 0) {
+        GameFix_Log("swaptip: +097dc2 -- not the shipped bytes, skipped");
+        return;
+    }
+    split = 0x1f4u + (g_targetW - 800u);
+    memcpy(repl, want, 6);
+    PutU32(repl + 2, split);
+    if (WriteCode(at, repl, 6))
+        GameFix_Log("swaptip: tab split 500 -> %u", split);
+    else
+        GameFix_Log("swaptip: could not write the code");
+}
 
 static int g_yboundDone = 0;
 
@@ -3481,6 +3596,10 @@ static void Diablo2FixupYBounds(void)
 
         if (y->modrm == YB_EAX) {                    /* cmp eax,imm32 */
             want[0] = 0x3d; len = 5u; immAt = 1u;
+        } else if (y->modrm == YB_MOV_EAX) {         /* mov eax,imm32 */
+            want[0] = 0xb8; len = 5u; immAt = 1u;
+        } else if (y->modrm == YB_PUSH) {            /* push imm32 */
+            want[0] = 0x68; len = 5u; immAt = 1u;
         } else {                                     /* cmp edi/ecx,imm32 */
             want[0] = 0x81; want[1] = y->modrm; len = 6u; immAt = 2u;
         }
@@ -4649,6 +4768,7 @@ void GameFix_Tick(void)
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupMercPanel();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupHitRegions();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupYBounds();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupSwapTip();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestIcons();
     if (g_targetRes && (frame % 30u) == 0) Diablo2InstallBeltHook();
 
