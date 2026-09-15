@@ -1802,6 +1802,48 @@ static const D2Fix2D g_d2Fix2D[] = {
     ** for diagnosing this class of bug at the tallest mode available.
     */
     { D2_TAG_CLIENT, 0x040215u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint cancel tip" },
+    /*
+    ** The HIRELING panel's text.
+    **
+    ** The panel (+09f250) positions everything from two layout globals set
+    ** once at start-up -- [6fbcd354]=80 and [6fbcd358]=-60 in the 800x600
+    ** layout -- but only its BACKGROUND also uses the screen height:
+    **
+    **     background   y = [6fbcd358] + H - 0xe0         follows the screen
+    **     text         y = table_y - [6fbcd358] (- 2)    stock
+    **
+    ** so above 600 lines the text stayed where it was while the boxes it
+    ** belongs in moved down by H-600.  Four DrawText calls, each in a helper
+    ** called from +09f250 and nowhere else.  Rows are keyed on the RETURN
+    ** address, the call site + 5:
+    **
+    **     call +094247  the hireling's name, y = 0xd6 - [6fbcd358]
+    **     call +090a6a  the labels, from the table at 6fb83748 (x, x2, y, id)
+    **     call +090ad3  the same labels' two-line arm, split at '\n'
+    **     call +094121  the values, from the table at 6fb9e808 (x, x2, y, stat)
+    **
+    ** Its slot rects are stock for the same reason; Diablo2FixupMercPanel
+    ** moves those.
+    */
+    { D2_TAG_CLIENT, 0x09424cu, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "merc name"    },
+    { D2_TAG_CLIENT, 0x090a6fu, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "merc label"   },
+    { D2_TAG_CLIENT, 0x090ad8u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "merc label 2" },
+    { D2_TAG_CLIENT, 0x094126u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "merc value"   },
+    /*
+    ** The Horadric Cube's TRANSMUTE animation -- the flourish over the cube
+    ** grid when a quest recipe succeeds (ui\menu\horadric, 30 frames at 70 ms,
+    ** started by +094260).  The cube panel draws it at the SCREEN CENTRE:
+    **
+    **     +09dac7  y = H/2 - 1
+    **     +09dadb  x = W/2
+    **
+    ** and the art's own frame offsets put it over the grid from the 800x600
+    ** centre, (400, 299).  But the cube panel is pinned to the left edge in x
+    ** and bottom-anchored in y, so the centre is the wrong reference at any
+    ** other size: the animation landed cx too far right and only half of H-600
+    ** down.  SUB and CENTRE together give back exactly (400, 299 + H-600).
+    */
+    { D2_TAG_CLIENT, 0x09daf0u, 0, 0, 0, 0, ADJ_X_SUB,  ADJ_Y_CENTRE, "cube horadric anim" },
 
     { D2_TAG_CLIENT, 0x09e0e2u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 535,217 */
     { D2_TAG_CLIENT, 0x09e127u, 0, 799, 0, 0, ADJ_X_RIGHT, ADJ_Y_NONE, "equip slot" },    /* 536,263 */
@@ -2491,6 +2533,60 @@ static void Diablo2FixupEquipSlots(void)
                         a + dy, b + dy);
     }
     if (moved) GameFix_Log("equipslots: moved %u of %u", moved, D2_EQUIP_N);
+}
+
+/*
+** The HIRELING panel, Y only.
+**
+** Its layout comes from the same loader as the player's (+093280, lazy: it
+** refills only when the 800-layout flag changes), as inventory record 0x0d:
+**
+**     6fbb1670   panel rect          L,R,T,B        D2Common#10770
+**     6fbb1728   grid info           as kGridDesc   D2Common#10964
+**     6fbccc80   ten slot rects      as D2_EQUIP_BASE, one per body location,
+**                                    D2Common#10441
+**
+** The slot rects are what place everything in the top half of the panel: the
+** items (+099320 centres each in its rect), the empty-slot silhouettes
+** (+08f6c0 draws at the rect's x and bottom), and the hover and click tests
+** that walk the same array from 0x6fbccc70.  All are stock 800x600
+** positions, while the panel's own background is drawn from the live screen
+** height (+09f250: y = H - 0xe0 + [6fbcd358]) -- so above 600 lines the items
+** hung at the top of the screen over an empty panel.
+**
+** X is left alone: the panel is anchored at x=0 at any width.  The slots
+** that a hireling does not have come back empty and ShiftPair skips them.
+*/
+#define D2_MERC_SLOTS   0x6fbccc80u
+#define D2_MERC_PANEL_T 0x6fbb1678u
+#define D2_MERC_PANEL_B 0x6fbb167cu
+#define D2_MERC_GRID    0x6fbb1728u
+
+static void Diablo2FixupMercPanel(void)
+{
+    HMODULE      cli = GetModuleHandleA("D2Client.dll");
+    unsigned int i, base, a, b;
+    unsigned int dy = (g_targetH > 600u) ? (g_targetH - 600u) : 0u;
+    static unsigned int lastS[D2_EQUIP_N][2];
+    static unsigned int lastP[2], lastG[2];
+
+    if (!cli || !g_d2InvGrid || !dy) return;
+
+    for (i = 0; i < D2_EQUIP_N; i++) {
+        base = D2_MERC_SLOTS + i * D2_EQUIP_STRIDE;
+        if (ShiftPair(cli, base + 0x0cu, base + 0x10u, dy,
+                      &lastS[i][0], &lastS[i][1], &a, &b))
+            GameFix_Log("  merc slot %u: y %u..%u -> %u..%u", i, a, b,
+                        a + dy, b + dy);
+    }
+
+    if (ShiftPair(cli, D2_MERC_PANEL_T, D2_MERC_PANEL_B, dy,
+                  &lastP[0], &lastP[1], &a, &b))
+        GameFix_Log("merc: panel rect y %u..%u -> %u..%u", a, b, a + dy, b + dy);
+
+    if (ShiftPair(cli, D2_MERC_GRID + 0x0cu, D2_MERC_GRID + 0x10u, dy,
+                  &lastG[0], &lastG[1], &a, &b))
+        GameFix_Log("merc: grid y %u..%u -> %u..%u", a, b, a + dy, b + dy);
 }
 
 /*
@@ -3807,6 +3903,76 @@ static BOOL D2MovieGrow(unsigned int srcN, unsigned int rowN)
 }
 
 /*
+** Bilinear filtering, for the 565 path (the one normally taken).
+**
+** Worked in "spread" 565: the three fields pulled apart with gaps between
+** them, green at 21..26, red at 11..15, blue at 0..4 --
+**
+**     0000 0GGG GGG0 0000 RRRR R000 000B BBBB        mask 0x07e0f81f
+**
+** -- so one multiply per pixel blends all three fields at once.  A 5-bit
+** weight grows each field by at most 5 bits, and every gap above a field is
+** at least that wide, so nothing carries into its neighbour.  Packing back to
+** 565 is one OR and a shift.
+**
+** Two passes.  Each SOURCE row is widened once, blending along x, into one of
+** two cached rows; each SCREEN row is then a blend of the two cached rows it
+** falls between.  The x work is per source row (292 of them) and only the
+** cheaper y blend is per screen row.  Rows whose sources did not change are
+** still skipped, now judged on both source rows a screen row reads.
+**
+** Sampling is centre-aligned, in 1/32ths of a source pixel:
+**     s32 = (2i+1) * n * 16 / out - 16
+** which stays inside 32 bits for any frame and screen this file accepts.
+*/
+#define D2_SPREAD_MASK 0x07e0f81fu
+
+static int           g_d2MovieFilter = 1;                  /* [Diablo2] moviefilter= */
+static unsigned int  g_d2MovieSpread[D2_MOVIE_MAX + 1u];   /* a source row, spread */
+static unsigned int  g_d2MovieWide[2][D2_SCREEN_MAX];      /* widened source rows */
+static int           g_d2MovieWideY[2];                    /* which row each holds */
+static unsigned char g_d2MovieXW[D2_SCREEN_MAX];           /* x weight, 0..31 */
+static unsigned char g_d2MovieDirty[D2_MOVIE_MAX];         /* per source row */
+
+static unsigned int D2Spread(unsigned int p)               /* 8888 -> spread 565 */
+{
+    return ((p >> 3) & 0x0000001fu) | ((p >> 8) & 0x0000f800u) |
+           ((p << 11) & 0x07e00000u);
+}
+
+static unsigned int D2Blend(unsigned int a, unsigned int b, unsigned int w)
+{
+    return ((a * (32u - w) + b * w) >> 5) & D2_SPREAD_MASK;   /* w 0..31 */
+}
+
+/* Source row `sy`, widened to outW and blended along x.  Rows are asked for
+   in ascending order within a frame, so the slot holding the LOWER row is the
+   one that will not be wanted again. */
+static const unsigned int *D2MovieWiden(unsigned int sy, unsigned int bw,
+                                        unsigned int outW)
+{
+    const unsigned int *s = g_d2MovieSrc + sy * bw;
+    unsigned int       *w;
+    unsigned int        i, k;
+
+    if (g_d2MovieWideY[0] == (int)sy) return g_d2MovieWide[0];
+    if (g_d2MovieWideY[1] == (int)sy) return g_d2MovieWide[1];
+
+    k = (g_d2MovieWideY[0] < g_d2MovieWideY[1]) ? 0u : 1u;
+    for (i = 0; i < bw; i++) g_d2MovieSpread[i] = D2Spread(s[i]);
+    g_d2MovieSpread[bw] = g_d2MovieSpread[bw - 1u];   /* for the last column */
+
+    w = g_d2MovieWide[k];
+    for (i = 0; i < outW; i++) {
+        unsigned int x0 = g_d2MovieXMap[i];
+        w[i] = D2Blend(g_d2MovieSpread[x0], g_d2MovieSpread[x0 + 1u],
+                       g_d2MovieXW[i]);
+    }
+    g_d2MovieWideY[k] = (int)sy;
+    return w;
+}
+
+/*
 ** Stands in for BinkCopyToBuffer in D2Glide's import table.
 **
 ** `dest` is whatever the lock just before produced: 565 when the wrapper below
@@ -3881,24 +4047,92 @@ static int WINAPI D2BinkCopyScaled(void *bink, void *dest, int pitch,
     full = (bink != g_d2MovieBink) || (b[3] <= 1u);
     g_d2MovieBink = bink;
 
-    if (g_d2MovieKey[0] != bw   || g_d2MovieKey[1] != bh ||
-        g_d2MovieKey[2] != outW || g_d2MovieKey[3] != outH ||
-        g_d2MovieKey[4] != bpp) {
-        /* Sampled at pixel centres, so the picture is not pulled a half
-           source pixel towards the top left. */
-        for (i = 0; i < outW; i++)
-            g_d2MovieXMap[i] = ((2u * i + 1u) * bw) / (2u * outW);
-        g_d2MovieKey[0] = bw;
-        g_d2MovieKey[1] = bh;
-        g_d2MovieKey[2] = outW;
-        g_d2MovieKey[3] = outH;
-        g_d2MovieKey[4] = bpp;
-        full = 1;
-        GameFix_Log("movie: %ux%u frame drawn %ux%u at %u,%u of %ux%u,"
-                    " %u-bit", bw, bh, outW, outH, x0, y0, W, H, bpp * 8u);
+    /* The x map, rebuilt when anything it depends on changes.  Bilinear is
+       only for a magnified frame going into the 565 lock: native size has
+       nothing to filter, and the 32-bit fallback stays nearest.  The choice
+       rides in the key (bit 8 of [4]) so the paths below can read it. */
+    {
+        unsigned int filt = (g_d2MovieFilter && bpp == 2u &&
+                             outW > bw && outH > bh) ? 1u : 0u;
+
+        if (g_d2MovieKey[0] != bw   || g_d2MovieKey[1] != bh ||
+            g_d2MovieKey[2] != outW || g_d2MovieKey[3] != outH ||
+            g_d2MovieKey[4] != (bpp | (filt << 8))) {
+            for (i = 0; i < outW; i++) {
+                if (filt) {
+                    int          s32 = (int)(((2u * i + 1u) * bw * 16u) / outW)
+                                       - 16;
+                    unsigned int sx;
+                    if (s32 < 0) s32 = 0;
+                    sx = (unsigned int)s32 >> 5;
+                    g_d2MovieXW[i] = (unsigned char)(s32 & 31);
+                    if (sx >= bw - 1u) { sx = bw - 1u; g_d2MovieXW[i] = 0; }
+                    g_d2MovieXMap[i] = sx;
+                } else {
+                    /* Nearest, sampled at pixel centres, so the picture is
+                       not pulled half a source pixel towards the top left. */
+                    g_d2MovieXMap[i] = ((2u * i + 1u) * bw) / (2u * outW);
+                }
+            }
+            g_d2MovieKey[0] = bw;
+            g_d2MovieKey[1] = bh;
+            g_d2MovieKey[2] = outW;
+            g_d2MovieKey[3] = outH;
+            g_d2MovieKey[4] = bpp | (filt << 8);
+            full = 1;
+            GameFix_Log("movie: %ux%u frame drawn %ux%u at %u,%u of %ux%u,"
+                        " %u-bit %s", bw, bh, outW, outH, x0, y0, W, H,
+                        bpp * 8u, filt ? "bilinear" : "nearest");
+        }
     }
 
     line   = (unsigned char *)dest + y0 * (unsigned int)pitch + x0 * bpp;
+
+    if (g_d2MovieKey[4] & 0x100u) {
+        unsigned short *o = (unsigned short *)g_d2MovieRow;
+
+        /* Which source rows changed, judged once for the frame: a screen
+           row reads two of them. */
+        for (row = 0; row < bh; row++) {
+            const unsigned int *s = g_d2MovieSrc  + row * bw;
+            unsigned int       *p = g_d2MoviePrev + row * bw;
+
+            g_d2MovieDirty[row] =
+                (unsigned char)(full || memcmp(s, p, bw * 4u) != 0);
+            if (g_d2MovieDirty[row]) memcpy(p, s, bw * 4u);
+        }
+        g_d2MovieWideY[0] = -1;
+        g_d2MovieWideY[1] = -1;
+
+        for (row = 0; row < outH; row++, line += pitch) {
+            const unsigned int *wa, *wb;
+            int          s32 = (int)(((2u * row + 1u) * bh * 16u) / outH) - 16;
+            unsigned int fy, sy1;
+
+            if (s32 < 0) s32 = 0;
+            sy = (unsigned int)s32 >> 5;
+            fy = (unsigned int)s32 & 31u;
+            if (sy >= bh - 1u) { sy = bh - 1u; fy = 0u; }
+            sy1 = fy ? sy + 1u : sy;
+            if (!g_d2MovieDirty[sy] && !g_d2MovieDirty[sy1]) continue;
+
+            /* wa stays valid across the second call: the slot it would
+               replace always holds a row below sy. */
+            wa = D2MovieWiden(sy, bw, outW);
+            if (fy == 0u) {
+                for (i = 0; i < outW; i++)
+                    o[i] = (unsigned short)(wa[i] | (wa[i] >> 16));
+            } else {
+                wb = D2MovieWiden(sy1, bw, outW);
+                for (i = 0; i < outW; i++) {
+                    unsigned int s = D2Blend(wa[i], wb[i], fy);
+                    o[i] = (unsigned short)(s | (s >> 16));
+                }
+            }
+            memcpy(line, o, outW * 2u);
+        }
+        return r;
+    }
     lastSy = 0xffffffffu;
     for (row = 0; row < outH; row++) {
         sy = ((2u * row + 1u) * bh) / (2u * outH);
@@ -4037,6 +4271,7 @@ static void Diablo2ReadIni(const char *ini)
     g_d2Client = (int)GetPrivateProfileIntA("Diablo2", "client", 1, ini);
     g_d2Glide  = (int)GetPrivateProfileIntA("Diablo2", "glide",  1, ini);
     g_d2Movies = (int)GetPrivateProfileIntA("Diablo2", "movies", 1, ini);
+    g_d2MovieFilter = (int)GetPrivateProfileIntA("Diablo2", "moviefilter", 1, ini);
     g_d2Trace  = (int)GetPrivateProfileIntA("Diablo2", "traceui", 0, ini);
     g_d2Menu   = (int)GetPrivateProfileIntA("Diablo2", "menu",    1, ini);
     g_d2InvGrid = (int)GetPrivateProfileIntA("Diablo2", "invgrid", 1, ini);
@@ -4411,6 +4646,7 @@ void GameFix_Tick(void)
        this at -- it has to be watched for. */
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupInvGrid();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupEquipSlots();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupMercPanel();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupHitRegions();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupYBounds();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestIcons();
