@@ -2862,7 +2862,21 @@ static const D2RegionFix g_d2Region[] = {
     { 0x06e1e8u, 10, 0x97, 0x50, 0x51u, { 0x83, 0xff, 0x1e }, 0x1eu, 0,
       "health orb click" },
     { 0x06e240u, 14, 0x97, 0x50, 0x55u, { 0x8d, 0x51, 0x91 }, 0x6fu, 1,
-      "mana orb click" }
+      "mana orb click" },
+
+    /*
+    ** The "QUEST LOG" notification button of the 640-wide layout, which sits
+    ** above the health orb.  Its click test (+020b00, left arm) is the stock
+    ** 0x29..0x49 from the screen's left edge:
+    **
+    **     +020b2c  cmp ecx,0x28 ; jle +020b52
+    **     +020b31  cmp ecx,0x4a ; jge +020b52
+    **
+    ** The art is moved with it -- see Diablo2FixupQuestBtn.  Mouse x is in
+    ** ecx here, hence lea edx,[ecx+d], modrm 0x91.
+    */
+    { 0x020b2cu, 10, 0x91, 0x20, 0x1fu, { 0x83, 0xf9, 0x28 }, 0x29u, 0,
+      "quest log button click" }
 };
 #define D2_REGION_N (sizeof(g_d2Region) / sizeof(g_d2Region[0]))
 
@@ -3668,6 +3682,88 @@ static void Diablo2FixupSkillPopup(void)
                     moved, (unsigned int)D2_POPUP_CALLS, cx, cx);
     } else {
         VirtualFree(stub, 0, MEM_RELEASE);
+    }
+}
+
+/*
+** The "QUEST LOG" notification button's ART (640-wide layout, above the
+** health orb).  +020eae picks its x once, into ebx, and the button face (x),
+** its icon (x+3) and the "Quest Log" caption (centred on x) are all drawn
+** from that:
+**
+**     +020ec4  bb 28 00 00 00   mov ebx,0x28      ; 40 from the left edge
+**
+** The health orb it sits over has moved in by cx with the centred control
+** panel, so the button follows it.  Its click test is corrected alongside it
+** in g_d2Region.  The other arm (+020eb3, x = W/2 + 0x28) is left alone.
+*/
+static int g_questBtnDone = 0;
+
+static void Diablo2FixupQuestBtn(void)
+{
+    static const unsigned char want[5] = { 0xbb, 0x28, 0x00, 0x00, 0x00 };
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned char *at;
+    unsigned char  repl[5];
+    unsigned int   x;
+
+    if (!cli || g_questBtnDone || g_targetW <= 800u) return;
+    g_questBtnDone = 1;                    /* one attempt, reported either way */
+
+    at = (unsigned char *)((unsigned int)cli + 0x020ec4u);
+    if (IsBadReadPtr(at, 5) || memcmp(at, want, 5) != 0) {
+        GameFix_Log("questbtn: +020ec4 -- not the shipped bytes, skipped");
+        return;
+    }
+    x = 0x28u + (g_targetW - 800u) / 2u;
+    memcpy(repl, want, 5);
+    PutU32(repl + 1, x);
+    if (WriteCode(at, repl, 5))
+        GameFix_Log("questbtn: x 40 -> %u", x);
+    else
+        GameFix_Log("questbtn: could not write the code");
+}
+
+/*
+** The "QUEST LOG" button as the 800-wide layout draws it.
+**
+** Diablo2FixupQuestBtn above covers the 640-layout copy (+020e50).  The
+** layout the game normally runs uses a second copy, found with the watch box
+** (+08d045 caption at x 18, +08d088 face at 40, +08d0d3 icon at 43), and that
+** one reads its position from a TABLE rather than a constant:
+**
+**     6fbaae38 + row*0x14:  x-left, x-right, y-top, y-face, y-caption
+**
+** Both its draw (+08cf7c) and its click test (+08b3d0) index the same row,
+** so moving the data moves the art and the click together.  y is already
+** H-relative (table y + H - 480).  The row comes from +08b040:
+**
+**     rows 0, 2   no view shift          x = 40..75       stock   -> +cx
+**     rows 1, 3   [6fbcd070] == 2        x + (W-640)/2    already centred
+**
+** (W-640)/2 is 80 + cx, so rows 1 and 3 are right as they are and only 0 and
+** 2 move.  Row 0 is shipped in the file; row 2 is filled in at start-up by
+** +0cdf00, so this is ShiftPair every tick like the other descriptors.
+*/
+#define D2_QBTN_ROWS    0x6fbaae38u
+#define D2_QBTN_STRIDE  0x14u
+
+static void Diablo2FixupQuestBtnRows(void)
+{
+    static const unsigned int rows[2] = { 0u, 2u };
+    static unsigned int last[2][2];
+    HMODULE      cli = GetModuleHandleA("D2Client.dll");
+    unsigned int i, base, a, b, cx;
+
+    if (!cli || g_targetW <= 800u) return;
+    cx = (g_targetW - 800u) / 2u;
+
+    for (i = 0; i < 2u; i++) {
+        base = D2_QBTN_ROWS + rows[i] * D2_QBTN_STRIDE;
+        if (ShiftPair(cli, base, base + 4u, cx, &last[i][0], &last[i][1],
+                      &a, &b))
+            GameFix_Log("questbtn: row %u x %u..%u -> %u..%u", rows[i], a, b,
+                        a + cx, b + cx);
     }
 }
 
@@ -4864,6 +4960,8 @@ void GameFix_Tick(void)
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupYBounds();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupSwapTip();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupSkillPopup();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestBtn();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestBtnRows();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestIcons();
     if (g_targetRes && (frame % 30u) == 0) Diablo2InstallBeltHook();
 
