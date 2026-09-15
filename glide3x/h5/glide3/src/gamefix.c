@@ -1962,21 +1962,16 @@ static const D2Fix2D g_d2Fix2D[] = {
     { D2_TAG_CLIENT, 0x06d877u, 0, 0, 0, 0, ADJ_X_AUTO, ADJ_Y_NONE, "mana tooltip" }
 
     /*
-    ** The skill-selection popup is deliberately NOT moved.
+    ** The skill-selection popup has NO rule here, on purpose.
     **
-    ** Moving it (+0a7160, one call site drawing both sides at 80,128 and
-    ** 1208,1256,1304) works visually and immediately breaks picking a skill:
-    ** its entries stop being selectable, because the popup's hit regions stay
-    ** where the art used to be.  Same split as everywhere else in this file.
+    ** Moving its draw (+0a7160, one call site drawing both sides) worked
+    ** visually and broke picking a skill: the entries stopped being
+    ** selectable, because the hit test stayed where the art used to be.
     **
-    ** Correcting it properly means finding those regions.  The draw is inside
-    ** a helper at 6fb57070 that takes x in eax from its caller, so the layout
-    ** base is one hop away and the hit test another -- and the popup is
-    ** transient UI.  A popup at the screen edge that WORKS beats one in the
-    ** right place that does not, so this stays stock until the regions are
-    ** found.  The row is kept, commented, so the site is not lost:
-    **
-    **   { D2_TAG_CLIENT, 0x0a7160u, 0,0, 0,0, ADJ_X_AUTO, ADJ_Y_NONE, "skill popup" }
+    ** It is corrected at the source instead -- Diablo2FixupSkillPopup moves
+    ** the starting x handed to the layout function, which draws, hit-tests
+    ** and selects from that one value, so they cannot disagree.  A rule here
+    ** as well would move the art a second time.
     */
 };
 #define D2_FIX2D_N (sizeof(g_d2Fix2D) / sizeof(g_d2Fix2D[0]))
@@ -3577,6 +3572,105 @@ static void Diablo2FixupSwapTip(void)
         GameFix_Log("swaptip: could not write the code");
 }
 
+/*
+** The SKILL-SELECTION popups -- the icon grids that open above the two skill
+** buttons on the control panel.
+**
+** Everything a popup does -- drawing, hover highlight, tooltip, hotkey
+** labels, the click that picks a skill -- is done by one layout function,
+** +0a73d0, from the starting x it is handed as its second argument.  Eight
+** calls in five small wrappers supply that x, and nothing else does:
+**
+**     right popup   x = W - 0x80     add e?x,0xffffff80  (imm8)
+**     left  popup   x = 0x50         push 0x50           (imm8)
+**
+** Both are measured from the SCREEN edges, but the skill buttons they belong
+** to sit on the centred control panel, so on a wide screen each popup opened
+** at the far edge.  They belong cx further in.  (Moving only the draw, which
+** was tried first, broke picking a skill -- see the note in g_d2Fix2D.)
+**
+** Those immediates are imm8 and cannot hold cx, so each call is aimed at a
+** stub instead, which adjusts the x argument where the callee will read it
+** and continues into the real function with the stack otherwise untouched:
+**
+**     add  dword [esp+8], +/-cx     ; [esp+4] is the unit, [esp+8] the x
+**     push <D2Client+0a73d0>
+**     ret
+**
+** y is already taken from the screen height (+0a73d6: H - 0x56).
+*/
+typedef struct {
+    unsigned int  rva;       /* the `call 0x6fb573d0` */
+    unsigned char right;     /* 1 = right popup (-cx), 0 = left (+cx) */
+} D2PopupCall;
+
+static const D2PopupCall g_d2PopupCall[] = {
+    { 0x0a772fu, 1 }, { 0x0a7757u, 0 }, { 0x0a778au, 1 }, { 0x0a77beu, 0 },
+    { 0x0a780eu, 0 }, { 0x0a783au, 1 }, { 0x0a7856u, 0 }, { 0x0a787bu, 1 }
+};
+#define D2_POPUP_CALLS  (sizeof(g_d2PopupCall) / sizeof(g_d2PopupCall[0]))
+#define D2_POPUP_LAYOUT 0x0a73d0u
+
+static int g_popupDone = 0;
+
+static void Diablo2FixupSkillPopup(void)
+{
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned char *stub, *at;
+    unsigned char  code[5];
+    unsigned int   i, cx, target, moved = 0;
+    int            rel;
+
+    if (!cli || g_popupDone || g_targetW <= 800u) return;
+    g_popupDone = 1;                       /* one attempt, reported either way */
+
+    cx     = (g_targetW - 800u) / 2u;
+    target = (unsigned int)cli + D2_POPUP_LAYOUT;
+
+    stub = (unsigned char *)VirtualAlloc(NULL, 32, MEM_COMMIT | MEM_RESERVE,
+                                         PAGE_EXECUTE_READWRITE);
+    if (!stub) { GameFix_Log("popup: no memory"); return; }
+
+    for (i = 0; i < 2u; i++) {             /* +0 left (+cx), +16 right (-cx) */
+        unsigned char *s = stub + 16u * i;
+        s[0] = 0x81; s[1] = 0x44; s[2] = 0x24; s[3] = 0x08;   /* add [esp+8],id */
+        PutU32(s + 4, i ? (unsigned int)(-(int)cx) : cx);
+        s[8] = 0x68;                                          /* push target    */
+        PutU32(s + 9, target);
+        s[13] = 0xc3;                                         /* ret            */
+    }
+
+    for (i = 0; i < D2_POPUP_CALLS; i++) {
+        const D2PopupCall *c = &g_d2PopupCall[i];
+
+        at = (unsigned char *)((unsigned int)cli + c->rva);
+        if (IsBadReadPtr(at, 5) || at[0] != 0xe8) {
+            GameFix_Log("popup: +%06lx -- not a call, skipped",
+                        (unsigned long)c->rva);
+            continue;
+        }
+        memcpy(&rel, at + 1, 4);
+        if ((unsigned int)at + 5u + (unsigned int)rel != target) {
+            GameFix_Log("popup: +%06lx -- calls elsewhere, skipped",
+                        (unsigned long)c->rva);
+            continue;
+        }
+        code[0] = 0xe8;
+        PutU32(code + 1, (unsigned int)(stub + (c->right ? 16u : 0u)) -
+                         ((unsigned int)at + 5u));
+        if (WriteCode(at, code, 5)) moved++;
+        else GameFix_Log("popup: +%06lx -- could not write the code",
+                         (unsigned long)c->rva);
+    }
+
+    if (moved) {
+        GameFix_Log("popup: %u of %u calls moved (left +%u, right -%u)",
+                    moved, (unsigned int)D2_POPUP_CALLS, cx, cx);
+    } else {
+        VirtualFree(stub, 0, MEM_RELEASE);
+    }
+}
+
 static int g_yboundDone = 0;
 
 static void Diablo2FixupYBounds(void)
@@ -4769,6 +4863,7 @@ void GameFix_Tick(void)
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupHitRegions();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupYBounds();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupSwapTip();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupSkillPopup();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestIcons();
     if (g_targetRes && (frame % 30u) == 0) Diablo2InstallBeltHook();
 
