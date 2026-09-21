@@ -1787,19 +1787,22 @@ static const D2Fix2D g_d2Fix2D[] = {
     { D2_TAG_CLIENT, 0x03ff72u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint tab"  },
     { D2_TAG_CLIENT, 0x0402a0u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint note" },
     /*
-    ** The rest of the waypoint panel: its list and its close button.
+    ** The rest of the waypoint panel: its close button.
     **
-    ** These were ambiguous at 1680x720 -- with by=120 a value like 149 could
-    ** have been stock 29 already anchored -- so they were left alone.  At
+    ** This was ambiguous at 1680x720 -- with by=120 a value like 149 could
+    ** have been stock 29 already anchored -- so it was left alone.  At
     ** 2560x1080 by is 480 and the same draws still arrive at 149, 144..249 and
     ** 477, all below by, which cannot be stock+by.  Provably stock, so they
     ** move.
     **
     ** Testing at a TALLER mode is what settled it: the larger by is, the more
     ** of the ambiguous band it resolves.
+    **
+    ** The destination LIST had two rules here as well, +0400f0 and +040158,
+    ** and they are deliberately gone: the rows' art and their click boxes come
+    ** out of one table, which is corrected instead -- see the note on
+    ** Diablo2FixupWpRows.  Rules here too would move the art a second time.
     */
-    { D2_TAG_CLIENT, 0x0400f0u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint list bg" },
-    { D2_TAG_CLIENT, 0x040158u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint list"    },
     { D2_TAG_CLIENT, 0x03fff3u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "waypoint close"   },
     /*
     ** The close button's CANCEL tooltip, x=347 beside the button at 353.
@@ -3771,6 +3774,233 @@ static void Diablo2FixupQuestBtnRows(void)
     }
 }
 
+/*
+** The WAYPOINT panel's destination list -- the art and the click boxes.
+**
+** The panel itself is drawn from the live screen height (+03fd30:
+** y = [6fbcd358] + H - 0xe0) and has always landed correctly.  Its nine
+** destination rows had not, because they come from a table of stock 800x600
+** positions,
+**
+**     6fba6530 + row*0x18:  icon x, icon y, caption x, caption y, hit x, hit y
+**
+** which FOUR consumers read, and only two of them used to be corrected:
+**
+**     +040091  icon draw            fields +0 / +4     no rule  -- stayed
+**     +0400f0  current-act overlay  fields +0 / +4     rule     -- moved
+**     +040158  caption draw         fields +8 / +0xc   rule     -- moved
+**     +03eca6  row hit test         field  +0x14       --       -- stayed
+**
+** So the row icons sat at the stock height while their captions and the panel
+** had moved down, and a row could only be clicked where its art used to be.
+** Both draw rules are gone and the table's three y columns move instead: one
+** correction the art and the hit test cannot disagree about.  The draws read
+** `table y - [6fbcd358]` and the test compares a mouse normalised by that same
+** global, so all four consumers live in the one space this shifts.
+**
+** An H-anchored y IS stock+by -- -60 + H - 0xe0 is 316 at 600 lines and 516 at
+** 800 -- which is what makes "has no height term" the whole test for what is
+** still left behind in this panel.
+**
+** Corrected once rather than per tick: the disassembly holds exactly three
+** references into the table (the two draw sites and the test) and none of them
+** writes, so unlike the lazily filled panel descriptors there is nothing to
+** re-apply.  All 27 values are checked against the shipped ones first, and a
+** single mismatch abandons the whole table rather than half-moving it.
+*/
+#define D2_WP_ROWS   0x6fba6530u
+#define D2_WP_STRIDE 0x18u
+#define D2_WP_N      9u
+
+static int g_wpRowsDone = 0;
+
+static void Diablo2FixupWpRows(void)
+{
+    /* icon y (+4), caption y (+0xc), hit-box top (+0x14), exactly as shipped */
+    static const unsigned int want[D2_WP_N][3] = {
+        {  89,  84,  60 }, { 125, 119,  96 }, { 161, 154, 132 },
+        { 197, 189, 168 }, { 234, 224, 205 }, { 270, 259, 241 },
+        { 306, 294, 277 }, { 342, 329, 313 }, { 378, 364, 349 }
+    };
+    static const unsigned int off[3] = { 0x04u, 0x0cu, 0x14u };
+    HMODULE      cli = GetModuleHandleA("D2Client.dll");
+    unsigned int i, j, base, v = 0, by, bad = 0;
+
+    if (!cli || g_wpRowsDone || g_targetH <= 600u) return;
+    by = g_targetH - 600u;
+    g_wpRowsDone = 1;                      /* one attempt, reported either way */
+
+    for (i = 0; i < D2_WP_N; i++) {
+        base = D2_WP_ROWS + i * D2_WP_STRIDE;
+        for (j = 0; j < 3u; j++) {
+            if (!ReadModuleGlobal(cli, base + off[j], &v) || v != want[i][j]) {
+                GameFix_Log("wprows: row %u +%02lx is %u, not the shipped %u "
+                            "-- table left alone",
+                            i, (unsigned long)off[j], v, want[i][j]);
+                return;
+            }
+        }
+    }
+
+    for (i = 0; i < D2_WP_N; i++) {
+        base = D2_WP_ROWS + i * D2_WP_STRIDE;
+        for (j = 0; j < 3u; j++)
+            if (!WriteModuleGlobal(cli, base + off[j], want[i][j] + by)) bad++;
+    }
+    if (bad)
+        GameFix_Log("wprows: %u of 27 values could not be written", bad);
+    else
+        GameFix_Log("wprows: 9 rows down by %u -- icon, caption and hit box",
+                    by);
+}
+
+/*
+** The same panel's ACT TABS, where only the click test stayed behind.
+**
+** The tab art is drawn at `edi - [6fbcd358] + 0x21`, no height term, and the
+** "waypoint tab" rule moves it.  What PICKS a tab is fn +03f000, which
+** compares the normalised mouse against stock bounds in each of its two arms:
+**
+**     +03f012  cmp edi,0x1e ; jg reject      expansion, five tabs
+**     +03f052  cmp edi,0x1e ; jg reject      classic, four
+**
+** Those are imm8, so g_d2YBound cannot widen them to 0x1e+by, and each is five
+** bytes with live code immediately behind it, so neither has the room a region
+** stub's `call ; ja` needs.
+**
+** Both arms sit inside that one function, it has exactly one caller (+03f26f)
+** and it never writes edi -- so the correction goes at the call instead.  The
+** stub hands the test a mouse y that is by smaller and puts edi back for the
+** close-button test the caller runs afterwards at +03f2d3:
+**
+**     sub edi,by ; call +03f000 ; add edi,by ; ret
+**
+** Inferred rather than observed: no run has reported the tabs as unclickable,
+** but they are the rows' defect exactly -- art moved by a rule, bounds left at
+** stock -- and the reading that found the rows finds them too.
+*/
+#define D2_WP_TABTEST 0x03f000u
+#define D2_WP_TABCALL 0x03f26fu
+
+static int g_wpTabDone = 0;
+
+static void Diablo2FixupWpTabs(void)
+{
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned char *stub, *at;
+    unsigned char  code[5];
+    unsigned int   by, target, rel = 0;
+
+    if (!cli || g_wpTabDone || g_targetH <= 600u) return;
+    by = g_targetH - 600u;
+    g_wpTabDone = 1;                       /* one attempt, reported either way */
+
+    at     = (unsigned char *)((unsigned int)cli + D2_WP_TABCALL);
+    target = (unsigned int)cli + D2_WP_TABTEST;
+    if (!IsBadReadPtr(at, 5) && at[0] == 0xe8) memcpy(&rel, at + 1, 4);
+    if (IsBadReadPtr(at, 5) || at[0] != 0xe8 ||
+        ((unsigned int)at + 5u + rel) != target) {
+        GameFix_Log("wptabs: +03f26f -- not the call to the tab test, skipped");
+        return;
+    }
+
+    stub = (unsigned char *)VirtualAlloc(NULL, 32, MEM_COMMIT | MEM_RESERVE,
+                                         PAGE_EXECUTE_READWRITE);
+    if (!stub) { GameFix_Log("wptabs: no memory"); return; }
+
+    stub[0] = 0x81; stub[1] = 0xef;             /* sub edi,by           */
+    PutU32(stub + 2, by);
+    stub[6] = 0xe8;                             /* call the real test   */
+    PutU32(stub + 7, target - ((unsigned int)stub + 11u));
+    stub[11] = 0x81; stub[12] = 0xc7;           /* add edi,by           */
+    PutU32(stub + 13, by);
+    stub[17] = 0xc3;                            /* ret                  */
+
+    code[0] = 0xe8;
+    PutU32(code + 1, (unsigned int)stub - ((unsigned int)at + 5u));
+    if (WriteCode(at, code, 5))
+        GameFix_Log("wptabs: act tab test -> stub %08lx (mouse y - %u)",
+                    (unsigned long)(unsigned int)stub, by);
+    else
+        GameFix_Log("wptabs: could not write the code");
+}
+
+/*
+** The QUEST LOG's act tabs, which drew correctly and could not be clicked.
+**
+** This panel is the waypoint panel's mirror image.  There the tab ART was
+** stock and a rule moved it; here the art is H-anchored in the file already
+** (the tab faces at +08d896 and +08d8f8 as [6fbcd358] + H - 0xe0/-0x30, the
+** numerals at +08da70 as [6fbcd358] + H - 0x1c0), which is why a draw rule on
+** +08da8b was once a bug and is still deliberately absent.  What stayed behind
+** here is the hit test.
+**
+** fn +08b0f0 takes the mouse already normalised by the layout globals -- y in
+** eax, x in esi -- and bounds it in a space with no height term at all:
+**
+**     test eax,eax   ; jl reject        y >= 0
+**     cmp  eax,0x1b  ; jg reject        y <= 27
+**     cmp  esi,0x13f ; jg reject        x <= 319, then 0x40 (expansion, five
+**                                       tabs) or 0x50 (classic, four) per tab
+**
+** So above 600 lines the tabs were drawn with the panel and stayed clickable
+** only in the strip near the top of the SCREEN where they used to be.
+**
+** 0x1b is imm8 and cannot hold 0x1b+by, and the lower bound is a `test` with
+** no immediate to widen at all.  But both bounds move together if the test is
+** handed a smaller y, and the function has exactly one caller.  eax is its
+** argument and the tab index is its result, so nothing needs restoring and the
+** stub is a plain tail jump:
+**
+**     sub eax,by ; jmp +08b0f0
+**
+** x is left alone: the quest log is anchored at x=0 at any width.  The panel's
+** other hit tests are already right -- the six icons in Diablo2FixupQuestIcons
+** and the two buttons as ybound rows -- which is why only the tabs misbehaved.
+*/
+#define D2_QTAB_TEST 0x08b0f0u
+#define D2_QTAB_CALL 0x08c7d5u
+
+static int g_qtabDone = 0;
+
+static void Diablo2FixupQuestTabs(void)
+{
+    HMODULE        cli = GetModuleHandleA("D2Client.dll");
+    unsigned char *stub, *at;
+    unsigned char  code[5];
+    unsigned int   by, target, rel = 0;
+
+    if (!cli || g_qtabDone || g_targetH <= 600u) return;
+    by = g_targetH - 600u;
+    g_qtabDone = 1;                        /* one attempt, reported either way */
+
+    at     = (unsigned char *)((unsigned int)cli + D2_QTAB_CALL);
+    target = (unsigned int)cli + D2_QTAB_TEST;
+    if (!IsBadReadPtr(at, 5) && at[0] == 0xe8) memcpy(&rel, at + 1, 4);
+    if (IsBadReadPtr(at, 5) || at[0] != 0xe8 ||
+        ((unsigned int)at + 5u + rel) != target) {
+        GameFix_Log("qtabs: +08c7d5 -- not the call to the tab test, skipped");
+        return;
+    }
+
+    stub = (unsigned char *)VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE,
+                                         PAGE_EXECUTE_READWRITE);
+    if (!stub) { GameFix_Log("qtabs: no memory"); return; }
+
+    stub[0] = 0x2d;                             /* sub eax,by          */
+    PutU32(stub + 1, by);
+    stub[5] = 0xe9;                             /* jmp the real test   */
+    PutU32(stub + 6, target - ((unsigned int)stub + 10u));
+
+    code[0] = 0xe8;
+    PutU32(code + 1, (unsigned int)stub - ((unsigned int)at + 5u));
+    if (WriteCode(at, code, 5))
+        GameFix_Log("qtabs: act tab test -> stub %08lx (mouse y - %u)",
+                    (unsigned long)(unsigned int)stub, by);
+    else
+        GameFix_Log("qtabs: could not write the code");
+}
+
 static int g_yboundDone = 0;
 
 static void Diablo2FixupYBounds(void)
@@ -4966,6 +5196,9 @@ void GameFix_Tick(void)
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupSkillPopup();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestBtn();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestBtnRows();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupWpRows();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupWpTabs();
+    if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestTabs();
     if (g_targetRes && (frame % 30u) == 0) Diablo2FixupQuestIcons();
     if (g_targetRes && (frame % 30u) == 0) Diablo2InstallBeltHook();
 
