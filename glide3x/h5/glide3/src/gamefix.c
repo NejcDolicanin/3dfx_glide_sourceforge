@@ -1750,9 +1750,14 @@ static const D2Fix2D g_d2Fix2D[] = {
     ** them is whether the value equals its own stock position, and the only
     ** way to know that is the unpatched layout: the tab sits at the TOP of the
     ** quest log at 800x600, so 573 could never have been its stock y.
+    **
+    ** The icons themselves no longer have rules here either.  They had two,
+    ** +08dde5 and +08de5d, and between them those covered five of the SIX
+    ** draws that read the icon position table.  The sixth, the animation that
+    ** plays over a quest as it completes (+08dbef), was missed and kept the
+    ** stock height.  All six are corrected at the table now, in
+    ** Diablo2FixupQuestIcons -- a rule here as well would move art twice.
     */
-    { D2_TAG_CLIENT, 0x08dde5u, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest icons"  },
-    { D2_TAG_CLIENT, 0x08de5du, 0, 0, 0, 0, ADJ_X_NONE, ADJ_Y_BOTTOM, "quest icons 2" },
     /* The quest TITLE and DESCRIPTION, left behind by the icons.  Both are
        D2Win text draws and both arrive at y 308 and 330..350 with by=480, so
        both are provably stock. */
@@ -4048,37 +4053,56 @@ static void Diablo2FixupYBounds(void)
 }
 
 /*
-** The six QUEST ICONS' hit boxes.
+** The six QUEST ICONS: where they are drawn AND where they are clicked.
 **
-** Their art is moved by the two draw rules above, and their hit test is a
-** static table -- 6fb9f180, sixteen bytes an entry, x at +0 and y at +4, box
-** 0x38 by 0x34 -- walked at 6fb3b1c1 with the count from 6fbd08b0:
+** One static table at 6fb9f178, sixteen bytes an entry, carries TWO coordinate
+** pairs per icon -- the draw position at +0/+4 and the hit box at +8/+0xc:
+**
+**     6fb9f178    26,121   32,65     icon 0, then rows of three, twice
+**
+** The hit box is walked at 6fb3b1c1 with the count from 6fbd08b0, box 0x38 by
+** 0x34:
 **
 **     mov ecx,0x6fb9f184
 **     mov edx,[ecx-4] ; cmp ebx,edx jl next ; add edx,0x38 ; cmp ebx,edx jge next
 **     mov edx,[ecx]   ; cmp edi,edx jl next ; add edx,0x34 ; cmp edi,edx jl HIT
 **
+** The DRAW pair has six readers, every one of them `y = table y - [6fbcd358]`:
+** +08dca9, +08dcf5 and +08dd43 push their arguments and jump into the draw at
+** +08dde0, +08ddbd falls into that same one, +08de36 has its own at +08de58 --
+** and +08dbc1 has its own at +08dbea, which is the animation that plays over a
+** quest the moment it completes.  Two draw rules used to cover the first five
+** and that sixth was missed, so at 1920x800 the animation played 200px above
+** the panel while the icon under it was right.  A rule corrects the readers
+** you found; the table corrects all of them.  Both rules are gone.
+**
 ** The coordinates are PANEL-RELATIVE and in the same space as the close
 ** button's constants: the icons occupy y 65..215 and the button y 392..425,
 ** both inside a panel that is 63..553 tall.  One space, so one correction --
-** the button's immediates get +by in Diablo2FixupYBounds and this column gets
-** the same.
+** the button's immediates get +by in Diablo2FixupYBounds and both of these
+** columns get the same.
 **
 ** Guarded on the shipped y, which makes it idempotent: after the write the
-** value is no longer 65 or 163 and a second pass does nothing.  x is left
-** alone; the quest log is anchored at x=0 at any width.
+** values are no longer 121/218 or 65/163 and a second pass does nothing.  x is
+** left alone; the quest log is anchored at x=0 at any width.  Nothing writes
+** this table -- all thirteen references to it in the module are loads -- so
+** the guard is belt and braces rather than a necessity.
 */
-#define D2_QICON_BASE   0x6fb9f180u
+#define D2_QICON_BASE   0x6fb9f178u
 #define D2_QICON_STRIDE 0x10u
 #define D2_QICON_N      6u
+#define D2_QICON_DRAWY  0x04u
+#define D2_QICON_HITY   0x0cu
 
 static int g_qiconDone = 0;
 
 static void Diablo2FixupQuestIcons(void)
 {
     /* Rows of three, twice: the 3x2 grid the panel shows. */
-    static const unsigned int stockY[D2_QICON_N] = { 65u, 65u, 65u,
-                                                     163u, 163u, 163u };
+    static const unsigned int stockDraw[D2_QICON_N] = { 121u, 121u, 121u,
+                                                        218u, 218u, 218u };
+    static const unsigned int stockHit[D2_QICON_N]  = {  65u,  65u,  65u,
+                                                        163u, 163u, 163u };
     HMODULE      cli = GetModuleHandleA("D2Client.dll");
     unsigned int i, by, y, moved = 0;
 
@@ -4086,14 +4110,22 @@ static void Diablo2FixupQuestIcons(void)
     by = g_targetH - 600u;
 
     for (i = 0; i < D2_QICON_N; i++) {
-        unsigned int va = D2_QICON_BASE + i * D2_QICON_STRIDE + 0x04u;
+        unsigned int rec  = D2_QICON_BASE + i * D2_QICON_STRIDE;
+        unsigned int both = 0;
 
-        if (!ReadModuleGlobal(cli, va, &y)) continue;
-        if (y != stockY[i]) continue;              /* already ours, or not it */
-        if (WriteModuleGlobal(cli, va, y + by)) {
-            GameFix_Log("  quest icon %u: y %u -> %u", i, y, y + by);
-            moved++;
+        if (ReadModuleGlobal(cli, rec + D2_QICON_DRAWY, &y) &&
+            y == stockDraw[i] &&
+            WriteModuleGlobal(cli, rec + D2_QICON_DRAWY, y + by)) {
+            GameFix_Log("  quest icon %u: draw y %u -> %u", i, y, y + by);
+            both++;
         }
+        if (ReadModuleGlobal(cli, rec + D2_QICON_HITY, &y) &&
+            y == stockHit[i] &&
+            WriteModuleGlobal(cli, rec + D2_QICON_HITY, y + by)) {
+            GameFix_Log("  quest icon %u: hit y %u -> %u", i, y, y + by);
+            both++;
+        }
+        if (both == 2u) moved++;       /* draw and hit together, or neither */
     }
     if (moved == D2_QICON_N) g_qiconDone = 1;      /* only stop when all six */
     if (moved) GameFix_Log("questicons: moved %u of %u", moved, D2_QICON_N);
