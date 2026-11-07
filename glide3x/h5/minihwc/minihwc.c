@@ -4305,8 +4305,16 @@ hwcInitVideo(hwcBoardInfo *bInfo, FxBool tiled, FxVideoTimingInfo *vidTiming,
          return FXFALSE;        
    }
 
+   /* Overlay fetch size, in bytes per line.  The register only holds 13
+    * bits of it (SST_OVERLAY_FETCH_SIZE); bit 13 (8192) lives in
+    * vidDesktopOverlayStride[31] and is set together with the stride
+    * further down.  Without that bit any line wider than 8191 bytes, i.e.
+    * 32 bpp above 2047 pixels, wraps: at 2560x32 the overlay fetched
+    * 10240 - 8192 = 2048 bytes = 512 pixels per line and smeared the rest.
+    * The DirectDraw driver (dd32 DDFXS32.C) has always set this bit. */
    HWC_IO_STORE(bInfo->regInfo, vidOverlayDudxOffsetSrcWidth,
-                ((bInfo->vidInfo.xRes << pixelShift) << 19));
+                (((bInfo->vidInfo.xRes << pixelShift) << SST_OVERLAY_FETCH_SIZE_SHIFT)
+                 & SST_OVERLAY_FETCH_SIZE));
 
    /* Video pixel buffer threshold */
    {
@@ -4660,9 +4668,14 @@ hwcInitVideo(hwcBoardInfo *bInfo, FxBool tiled, FxVideoTimingInfo *vidTiming,
 
   HWC_IO_STORE(bInfo->regInfo, vidMaxRGBDelta,/* bpp == 15 ? 0x101010 : */ 0x100810);
 
+  /* Stride in tiles for both the desktop and overlay halves, plus bit 31:
+   * bit 13 of the overlay fetch size (see vidOverlayDudxOffsetSrcWidth
+   * above), needed for 32 bpp lines wider than 2047 pixels. */
   HWC_IO_STORE( bInfo->regInfo, vidDesktopOverlayStride,
                 ( bInfo->buffInfo.bufStrideInTiles << 16 ) |
-                  bInfo->buffInfo.bufStrideInTiles );
+                  bInfo->buffInfo.bufStrideInTiles |
+                (((bInfo->vidInfo.xRes << pixelShift) & SST_OVERLAY_OVERFLOW_DUDX_BIT)
+                 << SST_OVERLAY_OVERFLOW_RELATIVE_SHIFT) );
 
   /* initialize pci registers */
 #ifdef FX_GLIDE_NAPALM

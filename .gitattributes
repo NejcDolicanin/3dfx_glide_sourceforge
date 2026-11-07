@@ -1,0 +1,19 @@
+# Text is stored as LF.  Files edited on the Windows side come back CRLF and
+# showed up as modified in every git status; text=auto makes git compare the
+# normalized content instead.  No eol is forced on checkout because this tree
+# is built on Windows, DOS and Linux alike and every toolchain here takes LF.
+*               text=auto
+
+# Binary, never converted
+*.3df           binary
+*.txs           binary
+*.ppm           binary
+*.pdb           binary
+*.doc           binary
+*.obj           binary
+*.res           binary
+*.dll           binary
+*.lib           binary
+*.exe           binary
+*.a             binary
+*.o             binary
