@@ -6674,8 +6674,21 @@ FxU32 hwcAAReadRegion16(hwcBoardInfo *bInfo, FxU32 colBufNum,
   FxU32 compareMask, renderMask;
   FxU32 lfbMemoryConfig, lfbMemoryConfigTemp;
   void (*hwcReadRegionFunc)(hwcBoardInfo *bInfo, FxU32 src, FxU32 src_x, FxU32 src_y, FxU32 src_width, FxU32 src_height, FxU32 strideInBytes, FxU16 *dst, FxU32 renderMask, FxU32 compareMask);
+  /* The lfb address stride is 8K (HWC_LFB_STRIDE), which holds 2048 pixels of a 32 bpp line: past that the
+   * address wraps into the next line (a 2560-wide shot repeated its left 512 pixels on the right).  For such
+   * a mode read through the per-chip path below with the tile mark on the buffer and a 16K stride, which
+   * lfbMemoryConfig is switched to only for the read. */
+  FxU32 lfbStride = bInfo->buffInfo.bufLfbStride;
+  FxU32 rawLfbStride = HWC_RAW_LFB_STRIDE;
+  FxBool wideLines = FXFALSE;
   
   if(!buffer) return 0;
+
+  if (bInfo->vidInfo.xRes * bInfo->h3pixelSize > lfbStride) {
+    wideLines = FXTRUE;
+    lfbStride = 0x4000UL;
+    rawLfbStride = SST_RAW_LFB_ADDR_STRIDE_16K;
+  }
   
   /* Clear buffer */
   memset(buffer, 0, src_width * src_height * 8);
@@ -6690,7 +6703,8 @@ FxU32 hwcAAReadRegion16(hwcBoardInfo *bInfo, FxU32 colBufNum,
    * or 4 chip boards */
   if ((bInfo->h3pixelSize == 2) ||
       (bInfo->h3pixelSample == 2) ||
-      (numChips == 4 && bInfo->h3pixelSample != 1)) {
+      (numChips == 4 && bInfo->h3pixelSample != 1) ||
+      wideLines) {
     
     /* Figure out framebuffer format (1555 or 565) */
     HWC_IO_LOAD(bInfo->regInfo, vidProcCfg, vidProcCfg);
@@ -6773,7 +6787,7 @@ FxU32 hwcAAReadRegion16(hwcBoardInfo *bInfo, FxU32 colBufNum,
       /* Just bang on lfbMemConfig to point to the base of the color buffer we want. */
       lfbMemoryConfigTemp =
         SST_RAW_LFB_TILE_BEGIN_PAGE_MUNGE((bInfo->buffInfo.colBuffStart0[colBufNum] >> 12))
-        | HWC_RAW_LFB_STRIDE
+        | rawLfbStride
         | (bInfo->buffInfo.bufStrideInTiles << SST_RAW_LFB_TILE_STRIDE_SHIFT);        
       
       if(chip == 0) {
@@ -6784,14 +6798,14 @@ FxU32 hwcAAReadRegion16(hwcBoardInfo *bInfo, FxU32 colBufNum,
       
       /* Read primary AA buffer */
       hwcReadRegionFunc(bInfo, bInfo->regInfo.rawLfbBase + bInfo->buffInfo.colBuffStart0[colBufNum], 
-                        src_x, src_y, src_width, src_height, bInfo->buffInfo.bufLfbStride, buffer,
+                        src_x, src_y, src_width, src_height, lfbStride, buffer,
                         renderMask, compareMask);
       
       /* Now do secondary AA buffer, if enabled. */
       if(bInfo->buffInfo.enable2ndbuffer) {
         lfbMemoryConfigTemp =
           SST_RAW_LFB_TILE_BEGIN_PAGE_MUNGE((bInfo->buffInfo.colBuffStart1[colBufNum] >> 12))
-          | HWC_RAW_LFB_STRIDE
+          | rawLfbStride
           | (bInfo->buffInfo.bufStrideInTiles << SST_RAW_LFB_TILE_STRIDE_SHIFT);        
         
         if(chip == 0) {
@@ -6802,7 +6816,7 @@ FxU32 hwcAAReadRegion16(hwcBoardInfo *bInfo, FxU32 colBufNum,
         
         /* Read seconday AA buffer */
         hwcReadRegionFunc(bInfo, bInfo->regInfo.rawLfbBase + bInfo->buffInfo.colBuffStart1[colBufNum],
-                          src_x, src_y, src_width, src_height, bInfo->buffInfo.bufLfbStride, buffer,
+                          src_x, src_y, src_width, src_height, lfbStride, buffer,
                           renderMask, compareMask);
       }
       
