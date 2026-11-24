@@ -362,6 +362,7 @@ GR_ENTRY(grDrawTriangle, void, (const void *a, const void *b, const void *c))
     }
 #endif
     lostContext: ; /* <-- my, that's odd, but MSVC was insistent  */
+    __asm ret 12;   /* naked: without it a lost context ran into the padding behind the function */
   }
 #elif (GLIDE_PLATFORM & GLIDE_OS_UNIX) || (GLIDE_PLATFORM & GLIDE_OS_DOS32)
   {
